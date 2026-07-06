@@ -23,6 +23,7 @@
 - Automatic admin JSON backup via `/cron/backup`.
 - Topic-specific leaderboards via `/top <topic_key>`.
 - Configurable difficulty points and challenge cost/reward via env.
+- Cleaner `/rules` ordering and `/kvizi_config` for checking active scoring config.
 
 ### Question operations
 

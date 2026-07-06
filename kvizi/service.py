@@ -505,6 +505,16 @@ class KviziService:
             self._reply(message, self._format_status_compact())
             return {"ok": True, "command": command}
 
+        if command == "/kvizi_config":
+            self._reply(
+                message,
+                copy.config_text(
+                    self.settings.difficulty_points,
+                    self.settings.challenge_economy,
+                ),
+            )
+            return {"ok": True, "command": command}
+
         if command == "/kvizi_questions_status":
             self._reply(message, self._format_questions_status())
             return {"ok": True, "command": command}

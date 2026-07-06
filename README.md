@@ -137,6 +137,7 @@ topic из текущего CSV.
 
 - `/kvizi_help_admin` — короткая справка по админ-командам и cron-ручкам
 - `/kvizi_bind <topic_key> <weight>` — выполнить внутри нужного топика
+- `/kvizi_config` — показать текущие очки и стоимость/награду вызовов из env
 - `/kvizi_status` — показать вопросы, топики, активные poll/challenge и последний cron
 - `/kvizi_status_compact` — короткий статус со счётчиками active/expired/challenge
 - `/kvizi_questions_status` — показать покрытие `questions.csv` по темам и сложностям

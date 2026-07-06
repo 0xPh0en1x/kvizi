@@ -1,6 +1,18 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from kvizi.scoring import CHALLENGE_ECONOMY, DIFFICULTY_BASE_POINTS, challenge_cost, challenge_reward
+
+
+DEFAULT_DIFFICULTY_ORDER = ("easy", "normal", "hard")
+
+
+def ordered_difficulties(difficulties: Iterable[str]) -> list[str]:
+    difficulty_set = {str(difficulty).strip().lower() for difficulty in difficulties if str(difficulty).strip()}
+    standard = [difficulty for difficulty in DEFAULT_DIFFICULTY_ORDER if difficulty in difficulty_set]
+    custom = sorted(difficulty_set - set(DEFAULT_DIFFICULTY_ORDER))
+    return standard + custom
 
 
 def rules_text(
@@ -9,14 +21,14 @@ def rules_text(
 ) -> str:
     difficulty_points = difficulty_points or DIFFICULTY_BASE_POINTS
     challenge_economy = challenge_economy or CHALLENGE_ECONOMY
+    difficulties = ordered_difficulties(difficulty_points)
     points_text = ", ".join(
-        f"{difficulty} - {points}"
-        for difficulty, points in sorted(difficulty_points.items())
+        f"{difficulty} - {difficulty_points[difficulty]}"
+        for difficulty in difficulties
     )
     challenge_text = ", ".join(
-        f"{difficulty}: стоит {challenge_cost(difficulty, challenge_economy)} и дает "
-        f"+{challenge_reward(difficulty, challenge_economy)}"
-        for difficulty in sorted(difficulty_points)
+        f"{difficulty} {challenge_cost(difficulty, challenge_economy)}->{challenge_reward(difficulty, challenge_economy)}"
+        for difficulty in difficulties
     )
     return (
         "Добро пожаловать в манеж Квизи!\n\n"
@@ -29,18 +41,42 @@ def rules_text(
         "Табло: /top для общего рейтинга, /top <topic_key> для рейтинга сектора.\n"
         "\n"
         "Вызов: /kvizi_challenge <difficulty> внутри привязанного топика.\n"
-        f"{challenge_text}.\n"
+        f"Вызовы: {challenge_text}.\n"
         "Если ошибся или не ответил до закрытия, стоимость вызова сгорает."
     )
 
 
 RULES_TEXT = rules_text()
 
+
+def config_text(
+    difficulty_points: dict[str, int] | None = None,
+    challenge_economy: dict[str, dict[str, int]] | None = None,
+) -> str:
+    difficulty_points = difficulty_points or DIFFICULTY_BASE_POINTS
+    challenge_economy = challenge_economy or CHALLENGE_ECONOMY
+    difficulties = ordered_difficulties(difficulty_points)
+    lines = [
+        "Конфиг Квизи:",
+        "Очки за верный ответ:",
+    ]
+    lines.extend(f"- {difficulty}: {difficulty_points[difficulty]}" for difficulty in difficulties)
+    lines.append("Вызовы:")
+    lines.extend(
+        (
+            f"- {difficulty}: стоимость {challenge_cost(difficulty, challenge_economy)}, "
+            f"награда +{challenge_reward(difficulty, challenge_economy)}"
+        )
+        for difficulty in difficulties
+    )
+    return "\n".join(lines)
+
 ADMIN_HELP_TEXT = (
     "Админ-пульт Квизи:\n"
     "/kvizi_help_admin - эта справка\n"
     "/kvizi_bind <topic_key> <weight> - привязать текущий топик\n"
     "/kvizi_topics - список привязанных топиков\n"
+    "/kvizi_config - текущий баланс очков и вызовов\n"
     "/kvizi_status - подробный статус\n"
     "/kvizi_status_compact - короткий статус\n"
     "/kvizi_questions_status - покрытие questions.csv\n"

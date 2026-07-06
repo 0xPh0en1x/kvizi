@@ -311,8 +311,54 @@ def test_rules_command_uses_configured_scoring_rules(tmp_path: Path) -> None:
 
     assert result["command"] == "/rules"
     text = telegram.sent_messages[-1]["text"]
-    assert "ccna - 20" in text
-    assert "ccna: стоит 20 и дает +55" in text
+    assert text.index("easy - 5") < text.index("normal - 10")
+    assert text.index("normal - 10") < text.index("hard - 15")
+    assert text.index("hard - 15") < text.index("ccna - 20")
+    assert "Вызовы: easy 5->10, normal 10->25, hard 15->40, ccna 20->55." in text
+
+
+def test_admin_config_command_shows_configured_scoring_rules(tmp_path: Path) -> None:
+    settings = replace(
+        make_settings(tmp_path),
+        difficulty_points={"easy": 5, "normal": 10, "hard": 15, "ccna": 20},
+        challenge_economy={
+            "easy": {"cost": 5, "reward": 10},
+            "normal": {"cost": 10, "reward": 25},
+            "hard": {"cost": 15, "reward": 40},
+            "ccna": {"cost": 20, "reward": 55},
+        },
+    )
+    repository = KviziRepository(settings.database_path)
+    repository.init_db()
+    telegram = FakeTelegram()
+    service = KviziService(
+        settings=settings,
+        repository=repository,
+        telegram=telegram,  # type: ignore[arg-type]
+        question_bank=make_question_bank(),
+    )
+
+    result = service.handle_update(
+        {
+            "update_id": 93,
+            "message": {
+                "message_id": 81,
+                "message_thread_id": 101,
+                "chat": {"id": "-1001"},
+                "from": {"id": 7, "first_name": "Admin"},
+                "text": "/kvizi_config",
+            },
+        }
+    )
+
+    assert result["command"] == "/kvizi_config"
+    text = telegram.sent_messages[-1]["text"]
+    assert "Конфиг Квизи:" in text
+    assert "- easy: 5" in text
+    assert "- normal: 10" in text
+    assert "- hard: 15" in text
+    assert "- ccna: 20" in text
+    assert "- ccna: стоимость 20, награда +55" in text
 
 
 def test_post_question_sends_announcement_with_private_group_link(tmp_path: Path) -> None:
