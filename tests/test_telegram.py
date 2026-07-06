@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 import kvizi.telegram as telegram_module
-from kvizi.telegram import TelegramClient
+from kvizi.telegram import TelegramApiError, TelegramClient
 
 
 class FakeJsonResponse:
@@ -56,3 +56,47 @@ def test_download_file_resolves_telegram_file_path(monkeypatch: Any) -> None:
     assert get_calls == [
         "https://api.telegram.org/file/bottoken/documents/questions.csv"
     ]
+
+
+def test_send_message_retries_transient_proxy_error(monkeypatch: Any) -> None:
+    post_calls: list[dict[str, Any]] = []
+
+    def fake_post(url: str, json: dict[str, Any], timeout: int) -> FakeJsonResponse:
+        post_calls.append({"url": url, "json": json, "timeout": timeout})
+        if len(post_calls) == 1:
+            raise telegram_module.requests.exceptions.ProxyError("proxy 503 for bottoken")
+        return FakeJsonResponse({"ok": True, "result": {"message_id": 123}})
+
+    monkeypatch.setattr(telegram_module.requests, "post", fake_post)
+    monkeypatch.setattr(telegram_module.time, "sleep", lambda _: None)
+
+    result = TelegramClient("token", timeout_seconds=7, max_retries=2).send_message(
+        chat_id="-1001",
+        text="hello",
+    )
+
+    assert result["ok"] is True
+    assert len(post_calls) == 2
+    assert post_calls[1] == {
+        "url": "https://api.telegram.org/bottoken/sendMessage",
+        "json": {"chat_id": "-1001", "text": "hello", "disable_notification": False},
+        "timeout": 7,
+    }
+
+
+def test_send_message_wraps_and_sanitizes_request_exception(monkeypatch: Any) -> None:
+    def fake_post(url: str, json: dict[str, Any], timeout: int) -> FakeJsonResponse:
+        raise telegram_module.requests.exceptions.ProxyError(f"failed url={url}")
+
+    monkeypatch.setattr(telegram_module.requests, "post", fake_post)
+    monkeypatch.setattr(telegram_module.time, "sleep", lambda _: None)
+
+    try:
+        TelegramClient("token", max_retries=1).send_message(chat_id="-1001", text="hello")
+    except TelegramApiError as exc:
+        message = str(exc)
+    else:
+        raise AssertionError("TelegramApiError was not raised")
+
+    assert "<bot_token>" in message
+    assert "bottoken" not in message

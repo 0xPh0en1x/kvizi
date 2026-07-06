@@ -11,6 +11,7 @@ from kvizi.config import Settings
 from kvizi.database import KviziRepository
 from kvizi.questions import Question, QuestionBank
 from kvizi.service import KviziService
+from kvizi.telegram import TelegramApiError
 from kvizi.web import create_app
 
 
@@ -45,6 +46,18 @@ class FakeTelegram:
 
     def download_file(self, file_id: str) -> bytes:
         return self.downloaded_files[file_id]
+
+
+class FailOnceSendMessageTelegram(FakeTelegram):
+    def __init__(self) -> None:
+        super().__init__()
+        self.failed_once = False
+
+    def send_message(self, **payload: Any) -> dict[str, Any]:
+        if not self.failed_once:
+            self.failed_once = True
+            raise TelegramApiError("Telegram sendMessage request failed after 3 attempts: proxy 503")
+        return super().send_message(**payload)
 
 
 def make_settings(tmp_path: Path) -> Settings:
@@ -1140,6 +1153,45 @@ def test_flask_cron_requires_secret_and_posts_question(tmp_path: Path) -> None:
     assert ok.status_code == 200
     assert ok.get_json()["posted"] is True
     assert len(telegram.sent_polls) == 1
+
+
+def test_webhook_returns_503_and_allows_retry_when_telegram_reply_fails(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    repository = KviziRepository(settings.database_path)
+    repository.init_db()
+    telegram = FailOnceSendMessageTelegram()
+    app = create_app(settings=settings, repository=repository, telegram=telegram)  # type: ignore[arg-type]
+    client = app.test_client()
+
+    update = {
+        "update_id": 999,
+        "message": {
+            "chat": {"id": "-1001", "type": "supergroup"},
+            "from": {"id": 42, "first_name": "Ada"},
+            "message_thread_id": 101,
+            "text": "/me",
+        },
+    }
+
+    response = client.post(
+        f"/telegram/{settings.webhook_secret}",
+        headers={"X-Telegram-Bot-Api-Secret-Token": settings.webhook_secret},
+        json=update,
+    )
+    payload = response.get_json()
+    assert response.status_code == 503
+    assert payload["ok"] is False
+    assert "proxy 503" in payload["telegram_error"]
+
+    retried = client.post(
+        f"/telegram/{settings.webhook_secret}",
+        headers={"X-Telegram-Bot-Api-Secret-Token": settings.webhook_secret},
+        json=update,
+    )
+
+    assert retried.status_code == 200
+    assert retried.get_json()["command"] == "/me"
+    assert len(telegram.sent_messages) == 1
 
 
 def test_flask_cron_skips_when_topic_has_active_poll(tmp_path: Path) -> None:

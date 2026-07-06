@@ -794,6 +794,12 @@ class KviziRepository:
             return False
         return True
 
+    def forget_update(self, update_id: int | None) -> None:
+        if update_id is None:
+            return
+        with self.connect() as connection:
+            connection.execute("DELETE FROM processed_updates WHERE update_id = ?", (update_id,))
+
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS users (

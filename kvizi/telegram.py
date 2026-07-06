@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+from collections.abc import Callable
 from io import BytesIO
 from typing import Any
 
@@ -10,10 +12,21 @@ class TelegramApiError(RuntimeError):
     pass
 
 
+RETRY_STATUS_CODES = {500, 502, 503, 504}
+
+
 class TelegramClient:
-    def __init__(self, bot_token: str, timeout_seconds: int = 15) -> None:
+    def __init__(
+        self,
+        bot_token: str,
+        timeout_seconds: int = 15,
+        max_retries: int = 3,
+        retry_delay_seconds: float = 0.5,
+    ) -> None:
         self.bot_token = bot_token
         self.timeout_seconds = timeout_seconds
+        self.max_retries = max(1, max_retries)
+        self.retry_delay_seconds = retry_delay_seconds
 
     def send_message(
         self,
@@ -108,13 +121,7 @@ class TelegramClient:
         if not self.bot_token:
             raise TelegramApiError("TELEGRAM_BOT_TOKEN is not configured")
 
-        response = requests.get(
-            f"https://api.telegram.org/file/bot{self.bot_token}/{file_path}",
-            timeout=self.timeout_seconds,
-        )
-        if response.status_code >= 400:
-            raise TelegramApiError(f"Telegram file download failed: {response.text}")
-        return response.content
+        return self._download_file_bytes(file_path)
 
     def set_webhook(
         self,
@@ -138,20 +145,14 @@ class TelegramClient:
         if not self.bot_token:
             raise TelegramApiError("TELEGRAM_BOT_TOKEN is not configured")
 
-        response = requests.post(
-            f"https://api.telegram.org/bot{self.bot_token}/{method}",
-            json=payload,
-            timeout=self.timeout_seconds,
+        return self._request_with_retries(
+            method,
+            lambda: requests.post(
+                f"https://api.telegram.org/bot{self.bot_token}/{method}",
+                json=payload,
+                timeout=self.timeout_seconds,
+            ),
         )
-        try:
-            data = response.json()
-        except ValueError as exc:
-            raise TelegramApiError(f"Telegram {method} returned non-JSON response") from exc
-
-        if response.status_code >= 400 or not data.get("ok"):
-            description = data.get("description") or response.text
-            raise TelegramApiError(f"Telegram {method} failed: {description}")
-        return data
 
     def _request_multipart(
         self,
@@ -162,18 +163,97 @@ class TelegramClient:
         if not self.bot_token:
             raise TelegramApiError("TELEGRAM_BOT_TOKEN is not configured")
 
-        response = requests.post(
-            f"https://api.telegram.org/bot{self.bot_token}/{method}",
-            data=payload,
-            files=files,
-            timeout=self.timeout_seconds,
+        return self._request_with_retries(
+            method,
+            lambda: requests.post(
+                f"https://api.telegram.org/bot{self.bot_token}/{method}",
+                data=payload,
+                files=files,
+                timeout=self.timeout_seconds,
+            ),
+            before_attempt=lambda: self._rewind_files(files),
         )
-        try:
-            data = response.json()
-        except ValueError as exc:
-            raise TelegramApiError(f"Telegram {method} returned non-JSON response") from exc
 
-        if response.status_code >= 400 or not data.get("ok"):
-            description = data.get("description") or response.text
-            raise TelegramApiError(f"Telegram {method} failed: {description}")
-        return data
+    def _request_with_retries(
+        self,
+        method: str,
+        send_request: Callable[[], requests.Response],
+        before_attempt: Callable[[], None] | None = None,
+    ) -> dict[str, Any]:
+        for attempt in range(1, self.max_retries + 1):
+            if before_attempt is not None:
+                before_attempt()
+            try:
+                response = send_request()
+            except requests.RequestException as exc:
+                if self._can_retry(attempt):
+                    self._sleep_before_retry(attempt)
+                    continue
+                raise TelegramApiError(
+                    f"Telegram {method} request failed after {attempt} attempts: "
+                    f"{self._sanitize_error(exc)}"
+                ) from exc
+
+            try:
+                data = response.json()
+            except ValueError as exc:
+                if response.status_code in RETRY_STATUS_CODES and self._can_retry(attempt):
+                    self._sleep_before_retry(attempt)
+                    continue
+                raise TelegramApiError(f"Telegram {method} returned non-JSON response") from exc
+
+            if response.status_code in RETRY_STATUS_CODES and self._can_retry(attempt):
+                self._sleep_before_retry(attempt)
+                continue
+
+            if response.status_code >= 400 or not data.get("ok"):
+                description = data.get("description") or response.text
+                raise TelegramApiError(f"Telegram {method} failed: {self._sanitize_error(description)}")
+            return data
+
+        raise TelegramApiError(f"Telegram {method} request failed")
+
+    def _download_file_bytes(self, file_path: str) -> bytes:
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                response = requests.get(
+                    f"https://api.telegram.org/file/bot{self.bot_token}/{file_path}",
+                    timeout=self.timeout_seconds,
+                )
+            except requests.RequestException as exc:
+                if self._can_retry(attempt):
+                    self._sleep_before_retry(attempt)
+                    continue
+                raise TelegramApiError(
+                    f"Telegram file download failed after {attempt} attempts: "
+                    f"{self._sanitize_error(exc)}"
+                ) from exc
+
+            if response.status_code in RETRY_STATUS_CODES and self._can_retry(attempt):
+                self._sleep_before_retry(attempt)
+                continue
+            if response.status_code >= 400:
+                raise TelegramApiError(f"Telegram file download failed: {self._sanitize_error(response.text)}")
+            return response.content
+
+        raise TelegramApiError("Telegram file download failed")
+
+    def _can_retry(self, attempt: int) -> bool:
+        return attempt < self.max_retries
+
+    def _sleep_before_retry(self, attempt: int) -> None:
+        if self.retry_delay_seconds <= 0:
+            return
+        time.sleep(self.retry_delay_seconds * attempt)
+
+    def _sanitize_error(self, value: object) -> str:
+        text = str(value)
+        if self.bot_token:
+            text = text.replace(self.bot_token, "<bot_token>")
+        return text
+
+    def _rewind_files(self, files: dict[str, Any]) -> None:
+        for file_info in files.values():
+            stream = file_info[1] if isinstance(file_info, tuple) and len(file_info) > 1 else file_info
+            if hasattr(stream, "seek"):
+                stream.seek(0)

@@ -189,16 +189,21 @@ class KviziService:
 
     def handle_update(self, update: dict[str, Any]) -> dict[str, Any]:
         update_id = update.get("update_id")
-        if not self.repository.try_claim_update(int(update_id) if update_id is not None else None):
+        claimed_update_id = int(update_id) if update_id is not None else None
+        if not self.repository.try_claim_update(claimed_update_id):
             return {"ok": True, "duplicate": True}
 
-        if "poll_answer" in update:
-            return self._handle_poll_answer(update["poll_answer"])
-        if "callback_query" in update:
-            return self._handle_callback_query(update["callback_query"])
-        if "message" in update:
-            return self._handle_message(update["message"])
-        return {"ok": True, "ignored": True}
+        try:
+            if "poll_answer" in update:
+                return self._handle_poll_answer(update["poll_answer"])
+            if "callback_query" in update:
+                return self._handle_callback_query(update["callback_query"])
+            if "message" in update:
+                return self._handle_message(update["message"])
+            return {"ok": True, "ignored": True}
+        except TelegramApiError:
+            self.repository.forget_update(claimed_update_id)
+            raise
 
     def _select_route(
         self,

@@ -5,7 +5,7 @@ from flask import Flask, abort, jsonify, request
 from kvizi.config import Settings, load_settings
 from kvizi.database import KviziRepository, utc_now_iso
 from kvizi.service import KviziService
-from kvizi.telegram import TelegramClient
+from kvizi.telegram import TelegramApiError, TelegramClient
 
 
 def create_app(
@@ -47,7 +47,11 @@ def create_app(
         if request.headers.get("X-Telegram-Bot-Api-Secret-Token") != settings.webhook_secret:
             abort(403)
         update = request.get_json(silent=True) or {}
-        return jsonify(service.handle_update(update))
+        try:
+            return jsonify(service.handle_update(update))
+        except TelegramApiError as exc:
+            app.logger.warning("Telegram API failure while handling webhook update: %s", exc)
+            return jsonify({"ok": False, "telegram_error": str(exc)}), 503
 
     @app.post("/cron/tick")
     def cron_tick():
