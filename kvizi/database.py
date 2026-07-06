@@ -552,6 +552,7 @@ class KviziRepository:
         user: dict[str, Any],
         option_ids: list[int],
         now_iso: str,
+        difficulty_points: dict[str, int] | None = None,
     ) -> AnswerResult:
         user_id = int(user["id"])
         self.upsert_user(user)
@@ -618,7 +619,8 @@ class KviziRepository:
                         is_correct=is_correct,
                         current_points=current_points,
                         current_streak=current_streak,
-                    )
+                    ),
+                    difficulty_points=difficulty_points,
                 )
             best_streak = max(
                 score_result.new_streak,

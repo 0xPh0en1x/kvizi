@@ -18,7 +18,7 @@ from kvizi.question_report import build_report, find_duplicate_ids, format_repor
 from kvizi.questions import DIFFICULTY_PATTERN, QUESTION_COLUMNS, Question, QuestionBank, load_questions
 from kvizi.questions import QuestionValidationError
 from kvizi.routing import TopicRoute, TopicRouter
-from kvizi.scoring import challenge_cost, challenge_reward
+from kvizi.scoring import base_points, challenge_cost, challenge_reward
 from kvizi.telegram import TelegramApiError, TelegramClient
 
 MAX_QUESTIONS_UPLOAD_BYTES = 2_000_000
@@ -235,7 +235,11 @@ class KviziService:
 
         return PostQuestionResult(
             True,
-            copy.question_intro(route.topic_key, question.difficulty),
+            copy.question_intro(
+                route.topic_key,
+                question.difficulty,
+                base_points(question.difficulty, self.settings.difficulty_points),
+            ),
             topic_key=route.topic_key,
             question_id=question.id,
             poll_id=str(poll["id"]),
@@ -312,6 +316,7 @@ class KviziService:
             user=user,
             option_ids=option_ids,
             now_iso=utc_now_iso(),
+            difficulty_points=self.settings.difficulty_points,
         )
 
         if result.recorded and (result.stake > 1 or result.streak_bonus > 0 or result.is_challenge):
@@ -398,7 +403,13 @@ class KviziService:
             self._reply(message, self._format_top(topic_key))
             return {"ok": True, "command": command, "topic_key": topic_key}
         if command == "/rules":
-            self._reply(message, copy.RULES_TEXT)
+            self._reply(
+                message,
+                copy.rules_text(
+                    self.settings.difficulty_points,
+                    self.settings.challenge_economy,
+                ),
+            )
             return {"ok": True, "command": command}
         if command == "/kvizi_challenge":
             return self._handle_challenge_command(args, message, thread_id, user)
@@ -450,8 +461,8 @@ class KviziService:
             self._reply(message, "У тебя уже есть активный вызов. Сначала ответь на него или дождись закрытия.")
             return {"ok": True, "command": "/kvizi_challenge", "posted": False}
 
-        cost = challenge_cost(difficulty)
-        reward = challenge_reward(difficulty)
+        cost = challenge_cost(difficulty, self.settings.challenge_economy)
+        reward = challenge_reward(difficulty, self.settings.challenge_economy)
         score = self.repository.get_score(self.settings.season_name, user_id)
         if int(score["points"]) < cost:
             self._reply(message, f"Для вызова {difficulty} нужно {cost} очков. Сейчас у тебя {score['points']}.")
@@ -1257,7 +1268,12 @@ class KviziService:
         self.telegram.send_message(
             chat_id=self.settings.telegram_chat_id,
             message_thread_id=announce_thread_id,
-            text=copy.question_announcement(route.topic_key, question.difficulty, question_link),
+            text=copy.question_announcement(
+                route.topic_key,
+                question.difficulty,
+                question_link,
+                base_points(question.difficulty, self.settings.difficulty_points),
+            ),
             disable_notification=True,
         )
 

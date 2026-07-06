@@ -1,22 +1,40 @@
 from __future__ import annotations
 
-from kvizi.scoring import DIFFICULTY_BASE_POINTS
+from kvizi.scoring import CHALLENGE_ECONOMY, DIFFICULTY_BASE_POINTS, challenge_cost, challenge_reward
 
 
-RULES_TEXT = (
-    "Добро пожаловать в манеж Квизи!\n\n"
-    "Верный ответ приносит очки: easy - 5, normal - 10, hard - 15.\n"
-    "Кнопки x2 и x3 повышают награду, но добавляют риск: ошибка на x2 снимает базу, "
-    "ошибка на x3 снимает две базы. Счет ниже нуля не падает.\n"
-    "Серии дают бонусы: +3 на третьем верном ответе подряд, +7 на пятом, +15 на десятом.\n"
-    "Ставку надо нажать до ответа в опросе. После ответа аппарат уже щелкнул."
-    "\n\n"
-    "Табло: /top для общего рейтинга, /top <topic_key> для рейтинга сектора.\n"
-    "\n"
-    "Вызов: /kvizi_challenge <difficulty> внутри привязанного топика.\n"
-    "easy стоит 5 и дает +10, normal стоит 10 и дает +25, hard стоит 15 и дает +40.\n"
-    "Если ошибся или не ответил до закрытия, стоимость вызова сгорает."
-)
+def rules_text(
+    difficulty_points: dict[str, int] | None = None,
+    challenge_economy: dict[str, dict[str, int]] | None = None,
+) -> str:
+    difficulty_points = difficulty_points or DIFFICULTY_BASE_POINTS
+    challenge_economy = challenge_economy or CHALLENGE_ECONOMY
+    points_text = ", ".join(
+        f"{difficulty} - {points}"
+        for difficulty, points in sorted(difficulty_points.items())
+    )
+    challenge_text = ", ".join(
+        f"{difficulty}: стоит {challenge_cost(difficulty, challenge_economy)} и дает "
+        f"+{challenge_reward(difficulty, challenge_economy)}"
+        for difficulty in sorted(difficulty_points)
+    )
+    return (
+        "Добро пожаловать в манеж Квизи!\n\n"
+        f"Верный ответ приносит очки: {points_text}.\n"
+        "Кнопки x2 и x3 повышают награду, но добавляют риск: ошибка на x2 снимает базу, "
+        "ошибка на x3 снимает две базы. Счет ниже нуля не падает.\n"
+        "Серии дают бонусы: +3 на третьем верном ответе подряд, +7 на пятом, +15 на десятом.\n"
+        "Ставку надо нажать до ответа в опросе. После ответа аппарат уже щелкнул."
+        "\n\n"
+        "Табло: /top для общего рейтинга, /top <topic_key> для рейтинга сектора.\n"
+        "\n"
+        "Вызов: /kvizi_challenge <difficulty> внутри привязанного топика.\n"
+        f"{challenge_text}.\n"
+        "Если ошибся или не ответил до закрытия, стоимость вызова сгорает."
+    )
+
+
+RULES_TEXT = rules_text()
 
 ADMIN_HELP_TEXT = (
     "Админ-пульт Квизи:\n"
@@ -52,13 +70,13 @@ ADMIN_HELP_TEXT = (
 )
 
 
-def question_intro(topic_key: str, difficulty: str) -> str:
-    base = DIFFICULTY_BASE_POINTS.get(difficulty, 10)
+def question_intro(topic_key: str, difficulty: str, base: int | None = None) -> str:
+    base = DIFFICULTY_BASE_POINTS.get(difficulty, 10) if base is None else base
     return f"Квизи выкатывает вопрос в сектор {topic_key}! Сложность {difficulty}, база {base}."
 
 
-def question_announcement(topic_key: str, difficulty: str, link: str) -> str:
-    base = DIFFICULTY_BASE_POINTS.get(difficulty, 10)
+def question_announcement(topic_key: str, difficulty: str, link: str, base: int | None = None) -> str:
+    base = DIFFICULTY_BASE_POINTS.get(difficulty, 10) if base is None else base
     return (
         f"Квизи выкатывает вопрос в сектор {topic_key}! "
         f"Сложность {difficulty}, база {base}.\n"

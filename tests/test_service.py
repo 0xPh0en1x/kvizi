@@ -86,6 +86,12 @@ def make_settings(tmp_path: Path) -> Settings:
         season_name="main",
         announce_thread_id=None,
         chat_username="",
+        difficulty_points={"easy": 5, "normal": 10, "hard": 15},
+        challenge_economy={
+            "easy": {"cost": 5, "reward": 10},
+            "normal": {"cost": 10, "reward": 25},
+            "hard": {"cost": 15, "reward": 40},
+        },
     )
 
 
@@ -269,6 +275,46 @@ def test_top_command_reports_unknown_topic(tmp_path: Path) -> None:
     assert "network" in text
 
 
+def test_rules_command_uses_configured_scoring_rules(tmp_path: Path) -> None:
+    settings = replace(
+        make_settings(tmp_path),
+        difficulty_points={"easy": 5, "normal": 10, "hard": 15, "ccna": 20},
+        challenge_economy={
+            "easy": {"cost": 5, "reward": 10},
+            "normal": {"cost": 10, "reward": 25},
+            "hard": {"cost": 15, "reward": 40},
+            "ccna": {"cost": 20, "reward": 55},
+        },
+    )
+    repository = KviziRepository(settings.database_path)
+    repository.init_db()
+    telegram = FakeTelegram()
+    service = KviziService(
+        settings=settings,
+        repository=repository,
+        telegram=telegram,  # type: ignore[arg-type]
+        question_bank=make_question_bank(),
+    )
+
+    result = service.handle_update(
+        {
+            "update_id": 92,
+            "message": {
+                "message_id": 80,
+                "message_thread_id": 101,
+                "chat": {"id": "-1001"},
+                "from": {"id": 42, "first_name": "Ada"},
+                "text": "/rules",
+            },
+        }
+    )
+
+    assert result["command"] == "/rules"
+    text = telegram.sent_messages[-1]["text"]
+    assert "ccna - 20" in text
+    assert "ccna: стоит 20 и дает +55" in text
+
+
 def test_post_question_sends_announcement_with_private_group_link(tmp_path: Path) -> None:
     service, repository, telegram = make_service(tmp_path)
     repository.set_bot_setting("announce_thread_id", "999")
@@ -352,6 +398,89 @@ def test_challenge_posts_selected_difficulty_and_rewards_requester(tmp_path: Pat
     assert answer_result["recorded"] is True
     assert answer_result["delta"] == 40
     assert repository.get_score("main", 7)["points"] == 55
+
+
+def test_custom_difficulty_scoring_rules_and_challenge_economy(tmp_path: Path) -> None:
+    settings = replace(
+        make_settings(tmp_path),
+        difficulty_points={"easy": 5, "normal": 10, "hard": 15, "ccna": 20},
+        challenge_economy={
+            "easy": {"cost": 5, "reward": 10},
+            "normal": {"cost": 10, "reward": 25},
+            "hard": {"cost": 15, "reward": 40},
+            "ccna": {"cost": 20, "reward": 55},
+        },
+    )
+    repository = KviziRepository(settings.database_path)
+    repository.init_db()
+    repository.bind_topic("network", 101, 1)
+    telegram = FakeTelegram()
+    service = KviziService(
+        settings=settings,
+        repository=repository,
+        telegram=telegram,  # type: ignore[arg-type]
+        question_bank=QuestionBank(
+            [
+                Question(
+                    id="ccna-1",
+                    topic_key="network",
+                    difficulty="ccna",
+                    text="Which OSI layer does IP operate at?",
+                    options=("Network", "Transport", "Session", "Application"),
+                    correct_option_id=0,
+                    explanation="IP is a network layer protocol.",
+                    source="",
+                )
+            ]
+        ),
+    )
+
+    posted = service.post_question(difficulty="ccna")
+    assert posted.posted is True
+    assert posted.message == "Квизи выкатывает вопрос в сектор network! Сложность ccna, база 20."
+
+    answer_result = service.handle_update(
+        {
+            "update_id": 35,
+            "poll_answer": {
+                "poll_id": "poll-1",
+                "user": {"id": 42, "first_name": "Ada"},
+                "option_ids": [0],
+            },
+        }
+    )
+    assert answer_result["delta"] == 20
+    assert repository.get_score("main", 42)["points"] == 20
+
+    repository.mark_poll_closed("poll-1")
+    challenge_result = service.handle_update(
+        {
+            "update_id": 36,
+            "message": {
+                "message_id": 79,
+                "message_thread_id": 101,
+                "chat": {"id": "-1001"},
+                "from": {"id": 42, "first_name": "Ada"},
+                "text": "/kvizi_challenge ccna",
+            },
+        }
+    )
+    assert challenge_result["posted"] is True
+    assert challenge_result["cost"] == 20
+    assert challenge_result["reward"] == 55
+
+    challenge_answer = service.handle_update(
+        {
+            "update_id": 37,
+            "poll_answer": {
+                "poll_id": "poll-2",
+                "user": {"id": 42, "first_name": "Ada"},
+                "option_ids": [0],
+            },
+        }
+    )
+    assert challenge_answer["delta"] == 55
+    assert repository.get_score("main", 42)["points"] == 75
 
 
 def test_challenge_rejects_requester_bet_and_penalizes_wrong_answer(tmp_path: Path) -> None:

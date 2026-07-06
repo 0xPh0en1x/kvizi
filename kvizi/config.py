@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from kvizi.scoring import parse_challenge_economy, parse_difficulty_points
+
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -32,6 +34,8 @@ class Settings:
     season_name: str
     announce_thread_id: int | None
     chat_username: str
+    difficulty_points: dict[str, int]
+    challenge_economy: dict[str, dict[str, int]]
 
     @property
     def timezone(self) -> ZoneInfo:
@@ -52,6 +56,8 @@ def load_settings() -> Settings:
         season_name=os.getenv("KVIZI_SEASON", "main"),
         announce_thread_id=_parse_optional_int(os.getenv("KVIZI_ANNOUNCE_THREAD_ID", "")),
         chat_username=os.getenv("KVIZI_CHAT_USERNAME", "").strip().lstrip("@"),
+        difficulty_points=parse_difficulty_points(os.getenv("KVIZI_DIFFICULTY_POINTS")),
+        challenge_economy=parse_challenge_economy(os.getenv("KVIZI_CHALLENGE_REWARDS")),
     )
 
 

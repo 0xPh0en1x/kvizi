@@ -22,6 +22,7 @@
 - Daily summary posting and idempotent `/cron/daily`.
 - Automatic admin JSON backup via `/cron/backup`.
 - Topic-specific leaderboards via `/top <topic_key>`.
+- Configurable difficulty points and challenge cost/reward via env.
 
 ### Question operations
 
