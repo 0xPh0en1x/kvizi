@@ -503,6 +503,8 @@ def test_admin_status_reports_loaded_questions_topics_active_polls_and_cron(tmp_
     assert "network: thread=101" in text
     assert "Активные вопросы: 1" in text
     assert "challenge user=@adminuser (7)" in text
+    assert "05.07.2026 23:00:01 MSK" in text
+    assert "2026-07-05 20:00:01" not in text
     assert "Анонс-топик: 999" in text
     assert "Последний cron: posted" in text
 
@@ -1026,6 +1028,8 @@ def test_admin_status_compact_reports_counts_and_maintenance_hint(tmp_path: Path
     assert "Занятые топики: network=1" in text
     assert "Maintenance: есть просроченные poll" in text
     assert "Последний cron: maintenance_ok" in text
+    assert "01.01.2999 03:00:00 MSK" in text
+    assert "05.07.2026 23:00:01 MSK" in text
     assert "poll=challenge-poll" not in text
 
 

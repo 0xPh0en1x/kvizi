@@ -1128,7 +1128,15 @@ class KviziService:
         return f"+{value}" if value > 0 else str(value)
 
     def _short_dt(self, value: str) -> str:
-        return value.replace("T", " ").split("+", 1)[0].split(".", 1)[0]
+        try:
+            dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return value.replace("T", " ").split("+", 1)[0].split(".", 1)[0]
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        local_dt = dt.astimezone(self.settings.timezone)
+        timezone_label = local_dt.tzname() or self.settings.timezone_name
+        return f"{local_dt:%d.%m.%Y %H:%M:%S} {timezone_label}"
 
     def _poll_requester_name(self, poll: dict[str, Any]) -> str:
         user_id = poll.get("requested_by")
