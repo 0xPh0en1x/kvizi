@@ -599,6 +599,25 @@ class KviziRepository:
 
         return list(summaries.values())
 
+    def question_answer_stats(self) -> dict[str, dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT
+                    p.question_id,
+                    COUNT(DISTINCT p.poll_id) AS asked_count,
+                    COUNT(a.user_id) AS answers_count,
+                    COALESCE(SUM(CASE WHEN a.is_correct = 1 THEN 1 ELSE 0 END), 0) AS correct_count,
+                    COALESCE(SUM(CASE WHEN a.is_correct = 0 THEN 1 ELSE 0 END), 0) AS wrong_count,
+                    MAX(p.opened_at) AS last_opened_at
+                FROM polls AS p
+                LEFT JOIN answers AS a ON a.poll_id = p.poll_id
+                GROUP BY p.question_id
+                ORDER BY last_opened_at DESC
+                """
+            ).fetchall()
+        return {str(row["question_id"]): dict(row) for row in rows}
+
     def has_active_challenge(self, user_id: int, now_iso: str) -> bool:
         with self.connect() as connection:
             row = connection.execute(

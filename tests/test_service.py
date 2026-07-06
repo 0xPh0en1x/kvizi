@@ -861,6 +861,159 @@ def test_admin_errors_reports_error_events_and_failed_cron(tmp_path: Path) -> No
     assert "05.07.2026 23:10:01 MSK | backup_failed: bot can't initiate conversation" in text
 
 
+def test_admin_review_reports_suspicious_questions(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    repository = KviziRepository(settings.database_path)
+    repository.init_db()
+    telegram = FakeTelegram()
+    service = KviziService(
+        settings=settings,
+        repository=repository,
+        telegram=telegram,  # type: ignore[arg-type]
+        question_bank=QuestionBank(
+            [
+                Question(
+                    id="too-hard",
+                    topic_key="network",
+                    difficulty="hard",
+                    text="Hard?",
+                    options=("A", "B", "C", "D"),
+                    correct_option_id=0,
+                    explanation="Because.",
+                    source="lab",
+                ),
+                Question(
+                    id="too-easy",
+                    topic_key="system",
+                    difficulty="easy",
+                    text="Easy?",
+                    options=("A", "B", "C", "D"),
+                    correct_option_id=0,
+                    explanation="Because.",
+                    source="lab",
+                ),
+                Question(
+                    id="missing-meta",
+                    topic_key="security",
+                    difficulty="normal",
+                    text="Missing?",
+                    options=("A", "B", "C", "D"),
+                    correct_option_id=0,
+                    explanation="",
+                    source="",
+                ),
+            ]
+        ),
+    )
+    repository.create_poll(
+        poll_id="hard-poll",
+        telegram_message_id=101,
+        question_id="too-hard",
+        topic_key="network",
+        message_thread_id=101,
+        correct_option_id=0,
+        difficulty="hard",
+        opened_at="2026-07-05T20:00:00+00:00",
+        closes_at="2999-01-01T00:00:00+00:00",
+        explanation="",
+    )
+    for index, user_id in enumerate((41, 42, 43), start=1):
+        repository.record_answer(
+            season="main",
+            poll_id="hard-poll",
+            user={"id": user_id, "first_name": f"Wrong{index}"},
+            option_ids=[1],
+            now_iso=f"2026-07-05T20:00:{index:02d}+00:00",
+        )
+    repository.create_poll(
+        poll_id="easy-poll",
+        telegram_message_id=102,
+        question_id="too-easy",
+        topic_key="system",
+        message_thread_id=102,
+        correct_option_id=0,
+        difficulty="easy",
+        opened_at="2026-07-05T21:00:00+00:00",
+        closes_at="2999-01-01T00:00:00+00:00",
+        explanation="",
+    )
+    for index, user_id in enumerate((51, 52, 53, 54, 55), start=1):
+        repository.record_answer(
+            season="main",
+            poll_id="easy-poll",
+            user={"id": user_id, "first_name": f"Right{index}"},
+            option_ids=[0],
+            now_iso=f"2026-07-05T21:00:{index:02d}+00:00",
+        )
+
+    result = service.handle_update(
+        {
+            "update_id": 53,
+            "message": {
+                "message_id": 82,
+                "message_thread_id": 101,
+                "chat": {"id": "-1001"},
+                "from": {"id": 7, "first_name": "Admin"},
+                "text": "/kvizi_review",
+            },
+        }
+    )
+
+    assert result["command"] == "/kvizi_review"
+    text = telegram.sent_messages[-1]["text"]
+    assert "Ревизия вопросов:" in text
+    assert "too-hard | network hard | 0/3 верно (0%), ошибок 3, задан 1 раз" in text
+    assert "0% правильных при 3+ ответах" in text
+    assert "too-easy | system easy | 5/5 верно (100%), ошибок 0, задан 1 раз" in text
+    assert "100% правильных при 5+ ответах" in text
+    assert "missing-meta | security normal | нет ответов | нет explanation; нет source" in text
+    assert "Итого сигналов: 3 из 3 вопросов; со статистикой=2." in text
+
+
+def test_admin_review_reports_clean_state(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    repository = KviziRepository(settings.database_path)
+    repository.init_db()
+    telegram = FakeTelegram()
+    service = KviziService(
+        settings=settings,
+        repository=repository,
+        telegram=telegram,  # type: ignore[arg-type]
+        question_bank=QuestionBank(
+            [
+                Question(
+                    id="clean-1",
+                    topic_key="network",
+                    difficulty="normal",
+                    text="Clean?",
+                    options=("A", "B", "C", "D"),
+                    correct_option_id=0,
+                    explanation="Because.",
+                    source="lab",
+                )
+            ]
+        ),
+    )
+
+    result = service.handle_update(
+        {
+            "update_id": 54,
+            "message": {
+                "message_id": 83,
+                "message_thread_id": 101,
+                "chat": {"id": "-1001"},
+                "from": {"id": 7, "first_name": "Admin"},
+                "text": "/kvizi_review",
+            },
+        }
+    )
+
+    assert result["command"] == "/kvizi_review"
+    text = telegram.sent_messages[-1]["text"]
+    assert "Проблем не найдено по текущим порогам" in text
+    assert "Статистика: questions=1, со статистикой=0." in text
+
+
 def test_admin_help_lists_commands_and_cron_endpoints(tmp_path: Path) -> None:
     service, _repository, telegram = make_service(tmp_path)
 
@@ -883,6 +1036,7 @@ def test_admin_help_lists_commands_and_cron_endpoints(tmp_path: Path) -> None:
     assert "/kvizi_status_compact" in text
     assert "/kvizi_recent" in text
     assert "/kvizi_errors" in text
+    assert "/kvizi_review" in text
     assert "/kvizi_questions_status" in text
     assert "/kvizi_questions_template" in text
     assert "/kvizi_upload_questions" in text

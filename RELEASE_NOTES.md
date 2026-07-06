@@ -25,6 +25,7 @@
 - Configurable difficulty points and challenge cost/reward via env.
 - Cleaner `/rules` ordering and `/kvizi_config` for checking active scoring config.
 - Production observability commands: `/kvizi_recent` and `/kvizi_errors`.
+- Question quality review via `/kvizi_review`.
 
 ### Question operations
 

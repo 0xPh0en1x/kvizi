@@ -140,6 +140,7 @@ topic из текущего CSV.
 - `/kvizi_config` — показать текущие очки и стоимость/награду вызовов из env
 - `/kvizi_recent` — показать последние вопросы, ответы и результаты
 - `/kvizi_errors` — показать последние ошибки Telegram/cron
+- `/kvizi_review` — показать вопросы с подозрительной статистикой или пустыми explanation/source
 - `/kvizi_status` — показать вопросы, топики, активные poll/challenge и последний cron
 - `/kvizi_status_compact` — короткий статус со счётчиками active/expired/challenge
 - `/kvizi_questions_status` — показать покрытие `questions.csv` по темам и сложностям

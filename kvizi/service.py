@@ -534,6 +534,10 @@ class KviziService:
             self._reply(message, self._format_errors())
             return {"ok": True, "command": command}
 
+        if command == "/kvizi_review":
+            self._reply(message, self._format_question_review())
+            return {"ok": True, "command": command}
+
         if command == "/kvizi_questions_status":
             self._reply(message, self._format_questions_status())
             return {"ok": True, "command": command}
@@ -956,6 +960,76 @@ class KviziService:
                     f"{run['status']}: {run['message']}"
                 )
 
+        return "\n".join(lines)
+
+    def _format_question_review(self) -> str:
+        stats = self.repository.question_answer_stats()
+        review_items: list[tuple[int, str]] = []
+        questions_with_stats = 0
+
+        for question in self.question_bank.questions:
+            question_stats = stats.get(question.id, {})
+            answers_count = int(question_stats.get("answers_count") or 0)
+            correct_count = int(question_stats.get("correct_count") or 0)
+            wrong_count = int(question_stats.get("wrong_count") or 0)
+            asked_count = int(question_stats.get("asked_count") or 0)
+            if answers_count:
+                questions_with_stats += 1
+
+            issues: list[str] = []
+            severity = 0
+            if answers_count >= 3 and correct_count == 0:
+                issues.append("0% правильных при 3+ ответах")
+                severity += 100 + answers_count
+            if answers_count >= 5 and correct_count == answers_count:
+                issues.append("100% правильных при 5+ ответах")
+                severity += 80 + answers_count
+            if not question.explanation.strip():
+                issues.append("нет explanation")
+                severity += 15
+            if not question.source.strip():
+                issues.append("нет source")
+                severity += 10
+
+            if not issues:
+                continue
+
+            stats_text = "нет ответов"
+            if answers_count:
+                percent = round(correct_count * 100 / answers_count)
+                stats_text = f"{correct_count}/{answers_count} верно ({percent}%), ошибок {wrong_count}"
+            asked_text = f", задан {asked_count} раз" if asked_count else ""
+            review_items.append(
+                (
+                    severity,
+                    (
+                        f"- {question.id} | {question.topic_key} {question.difficulty} | "
+                        f"{stats_text}{asked_text} | {'; '.join(issues)}"
+                    ),
+                )
+            )
+
+        lines = ["Ревизия вопросов:"]
+        if not review_items:
+            lines.append(
+                "Проблем не найдено по текущим порогам: 0% при 3+ ответах, "
+                "100% при 5+ ответах, пустые explanation/source."
+            )
+            lines.append(
+                f"Статистика: questions={self.question_bank.count()}, "
+                f"со статистикой={questions_with_stats}."
+            )
+            return "\n".join(lines)
+
+        review_items.sort(key=lambda item: item[0], reverse=True)
+        for _, line in review_items[:15]:
+            lines.append(line)
+        if len(review_items) > 15:
+            lines.append(f"- ... ещё {len(review_items) - 15}")
+        lines.append(
+            f"Итого сигналов: {len(review_items)} из {self.question_bank.count()} вопросов; "
+            f"со статистикой={questions_with_stats}."
+        )
         return "\n".join(lines)
 
     def _format_questions_status(self) -> str:
