@@ -1,6 +1,76 @@
 id,topic_key,difficulty,question,option_1,option_2,option_3,option_4,option_5,option_6,correct_option_ids,explanation,source
-net-001,network,normal,Какой протокол обычно используется для разрешения доменного имени в IP-адрес?,DNS,DHCP,SMTP,ARP,,,1,DNS сопоставляет доменные имена с IP-адресами,
-net-002,network,hard,Какой DNS-записью обычно указывают IPv4-адрес хоста?,A,AAAA,MX,TXT,,,1,A-запись сопоставляет имя с IPv4-адресом,
-sec-001,security,normal,Что означает принцип least privilege?,Давать только необходимые права,Давать всем права администратора,Отключать аудит,Хранить пароли в коде,,,1,Минимальные необходимые права уменьшают последствия ошибки или взлома,
-sys-001,system,easy,Какая команда Linux показывает текущий каталог?,pwd,cd,ls,whoami,,,1,pwd печатает рабочий каталог,
-hw-001,hardware,easy,Какой компонент обычно хранит данные после выключения питания?,SSD,RAM,CPU,L1 cache,,,1,SSD является энергонезависимым накопителем,
+net-easy-001,network,easy,Какой протокол обычно переводит доменное имя в IP-адрес?,DNS,DHCP,SMTP,ARP,,,1,DNS используется для разрешения имен в IP-адреса,starter-pack-v1
+net-easy-002,network,easy,Какой адрес обычно обозначает локальный компьютер?,127.0.0.1,8.8.8.8,255.255.255.255,0.0.0.0,,,1,127.0.0.1 это loopback адрес локального хоста,starter-pack-v1
+net-easy-003,network,easy,Какой протокол чаще всего выдает IP-адрес клиенту автоматически?,DHCP,FTP,SSH,ICMP,,,1,DHCP автоматически назначает сетевые параметры клиентам,starter-pack-v1
+net-easy-004,network,easy,Как называется устройство которое соединяет разные IP-сети?,Маршрутизатор,Коммутатор,Патч-панель,Модем,,,1,Маршрутизатор пересылает пакеты между сетями,starter-pack-v1
+net-easy-005,network,easy,Какая команда часто проверяет доступность узла по ICMP?,ping,grep,mkdir,chmod,,,1,ping отправляет ICMP echo request и показывает ответ,starter-pack-v1
+net-normal-001,network,normal,Какой порт по умолчанию использует HTTPS?,443,80,22,53,,,1,HTTPS обычно работает поверх TCP порта 443,starter-pack-v1
+net-normal-002,network,normal,Какая DNS-запись указывает IPv4-адрес хоста?,A,AAAA,MX,TXT,,,1,A-запись сопоставляет имя с IPv4-адресом,starter-pack-v1
+net-normal-003,network,normal,Что делает NAT в домашнем маршрутизаторе?,Преобразует адреса,Шифрует файлы,Создает DNS-зону,Проверяет пароли,,,1,NAT преобразует внутренние адреса в адрес внешней сети,starter-pack-v1
+net-normal-004,network,normal,Какой протокол надежно доставляет поток данных с подтверждениями?,TCP,UDP,ARP,ICMP,,,1,TCP использует соединение и подтверждения доставки,starter-pack-v1
+net-normal-005,network,normal,Какая маска соответствует префиксу /24?,255.255.255.0,255.255.0.0,255.0.0.0,255.255.255.252,,,1,/24 означает 24 единичных бита в маске сети,starter-pack-v1
+net-hard-001,network,hard,Какой протокол связывает IPv4-адрес с MAC-адресом в локальной сети?,ARP,DNS,NTP,SNMP,,,1,ARP ищет MAC-адрес по известному IPv4-адресу,starter-pack-v1
+net-hard-002,network,hard,Какой флаг TCP обычно начинает установку соединения?,SYN,FIN,RST,ACK-only,,,1,TCP handshake начинается с SYN от клиента,starter-pack-v1
+net-hard-003,network,hard,Что означает MTU в сети?,Максимальный размер кадра или пакета,Минимальный TTL,Адрес шлюза,Номер VLAN,,,1,MTU задает максимальный размер передаваемого блока без фрагментации,starter-pack-v1
+net-hard-004,network,hard,Какая технология делит один физический коммутатор на логические сети?,VLAN,NAT,DHCP,DNS,,,1,VLAN изолирует широковещательные домены на втором уровне,starter-pack-v1
+net-hard-005,network,hard,Какой DNS-запрос возвращает почтовые серверы домена?,MX,A,CNAME,SRV,,,1,MX-записи указывают почтовые серверы домена,starter-pack-v1
+net-ccna-001,network,ccna,Какой протокол помогает избежать петель на втором уровне?,STP,OSPF,NAT,DHCP,,,1,STP блокирует избыточные пути и предотвращает L2-петли,starter-pack-v1
+net-ccna-002,network,ccna,Какой административный distance у статического маршрута Cisco по умолчанию?,1,0,90,110,,,1,У статического маршрута Cisco AD обычно равен 1,starter-pack-v1
+net-ccna-003,network,ccna,Какой протокол маршрутизации использует cost на основе bandwidth в Cisco?,OSPF,RIP,BGP,EIGRP,,,1,OSPF использует метрику cost которая обычно связана с bandwidth,starter-pack-v1
+net-ccna-004,network,ccna,Какой тип VLAN переносит трафик управления trunk без тега по умолчанию?,Native VLAN,Voice VLAN,Private VLAN,Management VLAN,,,1,Native VLAN на 802.1Q trunk передается без тега по умолчанию,starter-pack-v1
+net-ccna-005,network,ccna,Какая команда Cisco показывает краткое состояние интерфейсов и IP?,show ip interface brief,show running-config,show vlan brief,show arp,,,1,show ip interface brief быстро показывает IP и состояние интерфейсов,starter-pack-v1
+sys-easy-001,system,easy,Какая команда Linux показывает текущий каталог?,pwd,cd,ls,whoami,,,1,pwd печатает текущий рабочий каталог,starter-pack-v1
+sys-easy-002,system,easy,Какая команда показывает список файлов в каталоге?,ls,cat,rm,ssh,,,1,ls выводит содержимое каталога,starter-pack-v1
+sys-easy-003,system,easy,Какая команда меняет текущий каталог?,cd,pwd,echo,top,,,1,cd меняет текущий рабочий каталог,starter-pack-v1
+sys-easy-004,system,easy,Какая команда выводит содержимое текстового файла?,cat,mv,cp,kill,,,1,cat печатает содержимое файла в терминал,starter-pack-v1
+sys-easy-005,system,easy,Какая команда показывает имя текущего пользователя?,whoami,hostname,uptime,date,,,1,whoami выводит имя текущего пользователя,starter-pack-v1
+sys-normal-001,system,normal,Какой файл обычно содержит локальные учетные записи Linux?,/etc/passwd,/etc/hosts,/etc/fstab,/etc/resolv.conf,,,1,/etc/passwd содержит сведения о локальных пользователях,starter-pack-v1
+sys-normal-002,system,normal,Какая команда показывает запущенные процессы в интерактивном виде?,top,tar,scp,tee,,,1,top показывает процессы и нагрузку в реальном времени,starter-pack-v1
+sys-normal-003,system,normal,Какая команда меняет права доступа к файлу?,chmod,chown,grep,df,,,1,chmod изменяет режимы доступа к файлам и каталогам,starter-pack-v1
+sys-normal-004,system,normal,Какой каталог обычно содержит системные логи в Linux?,/var/log,/usr/bin,/home,/boot,,,1,/var/log обычно содержит журналы системы и сервисов,starter-pack-v1
+sys-normal-005,system,normal,Какая команда показывает свободное место на файловых системах?,df,du,free,lsblk,,,1,df показывает использование смонтированных файловых систем,starter-pack-v1
+sys-hard-001,system,hard,Какой сигнал обычно просит процесс корректно завершиться?,SIGTERM,SIGKILL,SIGHUP,SIGSTOP,,,1,SIGTERM дает процессу шанс завершиться корректно,starter-pack-v1
+sys-hard-002,system,hard,Какой systemd инструмент показывает статус сервиса?,systemctl,journalctl,crontab,modprobe,,,1,systemctl status показывает состояние unit или сервиса,starter-pack-v1
+sys-hard-003,system,hard,Что делает sticky bit на общем каталоге вроде /tmp?,Запрещает удалять чужие файлы,Дает root-права,Шифрует файлы,Отключает запись,,,1,Sticky bit позволяет удалять файл только владельцу файла или каталога,starter-pack-v1
+sys-hard-004,system,hard,Какая команда показывает открытые сетевые сокеты в современных Linux?,ss,ls,ipcrm,route,,,1,ss показывает сокеты и заменяет многие сценарии netstat,starter-pack-v1
+sys-hard-005,system,hard,Какой файл задает DNS-резолверы на многих Linux-системах?,/etc/resolv.conf,/etc/passwd,/etc/group,/etc/issue,,,1,/etc/resolv.conf содержит настройки DNS resolver,starter-pack-v1
+sys-linux-001,system,linux,Какая команда systemd показывает журналы сервиса ssh?,journalctl -u ssh,systemctl enable ssh,ssh-keygen -A,service ssh reload,,,1,journalctl -u показывает записи журнала выбранного unit,starter-pack-v1
+sys-linux-002,system,linux,Какой режим chmod соответствует правам rwxr-xr-x?,755,644,600,777,,,1,755 дает владельцу rwx а группе и остальным rx,starter-pack-v1
+sys-linux-003,system,linux,Какая команда показывает цепочку каталогов в PATH?,echo $PATH,cat /etc/passwd,uname -r,id,,,1,Переменная PATH содержит каталоги для поиска исполняемых файлов,starter-pack-v1
+sys-linux-004,system,linux,Какой инструмент показывает блочные устройства и точки монтирования?,lsblk,lsof,logger,groups,,,1,lsblk выводит диски разделы и точки монтирования,starter-pack-v1
+sys-linux-005,system,linux,Какая команда применяет изменения файла /etc/fstab без перезагрузки для всех записей?,mount -a,fsck -n,blkid,swapon -s,,,1,mount -a пытается смонтировать все записи из fstab,starter-pack-v1
+sec-easy-001,security,easy,Что означает принцип least privilege?,Давать только необходимые права,Давать всем права администратора,Отключать аудит,Хранить пароли в коде,,,1,Минимальные права снижают ущерб от ошибки или взлома,starter-pack-v1
+sec-easy-002,security,easy,Что лучше всего защищает аккаунт дополнительно к паролю?,MFA,Один короткий пароль,Общий пароль на команду,Отключенный экран блокировки,,,1,MFA добавляет второй фактор проверки личности,starter-pack-v1
+sec-easy-003,security,easy,Какой признак чаще всего связан с phishing?,Поддельная ссылка,Обновленный антивирус,Сложный пароль,Шифрование диска,,,1,Фишинг часто заманивает пользователя на поддельную ссылку,starter-pack-v1
+sec-easy-004,security,easy,Что нужно делать с подозрительным вложением от неизвестного отправителя?,Не открывать и проверить,Запустить сразу,Переслать всем,Переименовать в exe,,,1,Подозрительные вложения нельзя открывать без проверки,starter-pack-v1
+sec-easy-005,security,easy,Что помогает восстановиться после ransomware?,Резервные копии,Открытый RDP,Общий пароль,Отключенный журнал,,,1,Актуальные backup позволяют восстановить данные после шифрования,starter-pack-v1
+sec-normal-001,security,normal,Какой алгоритм обычно используется для хэширования паролей с солью?,bcrypt,MD5 без соли,Base64,CRC32,,,1,bcrypt специально замедляет подбор паролей,starter-pack-v1
+sec-normal-002,security,normal,Что означает CIA triad в безопасности?,Confidentiality Integrity Availability,Control Identity Audit,Cache Input Address,Certificate Internet Access,,,1,CIA описывает конфиденциальность целостность и доступность,starter-pack-v1
+sec-normal-003,security,normal,Какой протокол защищает HTTP трафик шифрованием?,TLS,FTP,Telnet,ARP,,,1,HTTPS использует TLS для шифрования и проверки подлинности,starter-pack-v1
+sec-normal-004,security,normal,Что такое vulnerability?,Слабость которую можно использовать,Список пользователей,Резервная копия,Сетевой порт,,,1,Уязвимость это слабое место системы или процесса,starter-pack-v1
+sec-normal-005,security,normal,Что означает принцип defense in depth?,Несколько уровней защиты,Один главный пароль,Отключение логов,Открытие всех портов,,,1,Defense in depth использует несколько независимых защитных слоев,starter-pack-v1
+sec-hard-001,security,hard,Что делает prepared statement против SQL injection?,Разделяет код запроса и данные,Ускоряет DNS,Шифрует диск,Открывает порт,,,1,Prepared statement не смешивает пользовательские данные с SQL-кодом,starter-pack-v1
+sec-hard-002,security,hard,Какой заголовок помогает снизить риск XSS через ограничение источников?,Content-Security-Policy,Server,User-Agent,Accept-Language,,,1,CSP ограничивает разрешенные источники скриптов и ресурсов,starter-pack-v1
+sec-hard-003,security,hard,Что означает TOCTOU в контексте race condition?,Проверка и использование разделены во времени,Двойное шифрование,Ошибка DNS,Смена пароля,,,1,TOCTOU возникает между проверкой состояния и последующим использованием,starter-pack-v1
+sec-hard-004,security,hard,Какой подход лучше для хранения API-секретов?,Secret manager или env,Коммит в Git,Публичная wiki,Имя файла secret.txt в репозитории,,,1,Секреты нужно хранить вне кода и выдавать приложению безопасно,starter-pack-v1
+sec-hard-005,security,hard,Что такое SSRF?,Запрос сервером внутреннего ресурса по указанию атакующего,Подмена MAC-адреса,Перебор паролей,Сжатие логов,,,1,SSRF заставляет сервер делать запросы к нежелательным адресам,starter-pack-v1
+sec-sp-001,security,security_plus,Какой тип контроля относится к deterrent control?,Предупреждающая табличка о видеонаблюдении,Шифрование диска,Резервная копия,Патч ОС,,,1,Deterrent control отпугивает нарушителя до атаки,starter-pack-v1
+sec-sp-002,security,security_plus,Что лучше описывает RTO?,Допустимое время восстановления,Максимальная потеря данных,Уровень шифрования,Размер журнала,,,1,RTO отвечает на вопрос как быстро нужно восстановить сервис,starter-pack-v1
+sec-sp-003,security,security_plus,Что лучше описывает RPO?,Допустимая потеря данных во времени,Время восстановления сервиса,Сложность пароля,Размер ключа RSA,,,1,RPO задает сколько данных можно потерять между backup и сбоем,starter-pack-v1
+sec-sp-004,security,security_plus,Какой принцип требует разделить критичную операцию между несколькими людьми?,Separation of duties,Single sign-on,Open access,Implicit trust,,,1,Separation of duties снижает риск злоупотребления одним человеком,starter-pack-v1
+sec-sp-005,security,security_plus,Что означает non-repudiation?,Невозможность обоснованно отрицать действие,Скрытие IP-адреса,Удаление логов,Сжатие трафика,,,1,Non-repudiation связывает действие с субъектом так чтобы его было трудно отрицать,starter-pack-v1
+hw-easy-001,hardware,easy,Какой компонент обычно хранит данные после выключения питания?,SSD,RAM,CPU,L1 cache,,,1,SSD является энергонезависимым накопителем,starter-pack-v1
+hw-easy-002,hardware,easy,Какой компонент выполняет инструкции программы?,CPU,PSU,SSD,NIC,,,1,CPU исполняет машинные инструкции,starter-pack-v1
+hw-easy-003,hardware,easy,Какой компонент временно хранит данные для работающих программ?,RAM,SSD,BIOS,Корпус,,,1,RAM это оперативная память для активных процессов,starter-pack-v1
+hw-easy-004,hardware,easy,Какой блок подает питание компонентам компьютера?,PSU,GPU,NIC,HDD,,,1,PSU преобразует и распределяет питание для компонентов,starter-pack-v1
+hw-easy-005,hardware,easy,Какой компонент отвечает за вывод изображения и графические вычисления?,GPU,NIC,SSD,CMOS battery,,,1,GPU обрабатывает графику и параллельные вычисления,starter-pack-v1
+hw-normal-001,hardware,normal,Какой разъем чаще всего используется современными NVMe SSD на материнской плате?,M.2,SATA power,VGA,RJ-11,,,1,Многие NVMe SSD устанавливаются в слот M.2,starter-pack-v1
+hw-normal-002,hardware,normal,Что означает ECC RAM?,Память с коррекцией ошибок,Память только для GPU,Самая быстрая кэш-память,Видеовыход,,,1,ECC RAM может обнаруживать и исправлять часть ошибок памяти,starter-pack-v1
+hw-normal-003,hardware,normal,Какой интерфейс обычно используют проводные Ethernet-сети?,RJ-45,HDMI,USB-C audio,DisplayPort,,,1,RJ-45 часто используется для витой пары Ethernet,starter-pack-v1
+hw-normal-004,hardware,normal,Что показывает SMART у накопителя?,Показатели здоровья диска,Скорость вентилятора,Версию BIOS,Тип оперативной памяти,,,1,SMART хранит диагностические показатели накопителя,starter-pack-v1
+hw-normal-005,hardware,normal,Какой компонент хранит настройки прошивки и время при выключенном ПК?,CMOS battery,CPU cooler,VRAM,PCIe slot,,,1,CMOS battery питает часы и часть настроек прошивки,starter-pack-v1
+hw-hard-001,hardware,hard,Какой стандарт шины чаще всего используют современные видеокарты?,PCIe,SATA,IDE,PS/2,,,1,Современные GPU обычно подключаются через PCI Express,starter-pack-v1
+hw-hard-002,hardware,hard,Что означает NUMA в серверной архитектуре?,Неравномерный доступ к памяти,Новый USB режим,Тип RAID,Формат BIOS,,,1,NUMA описывает разную задержку доступа CPU к разным областям памяти,starter-pack-v1
+hw-hard-003,hardware,hard,Какой RAID обеспечивает зеркалирование без увеличения полезной емкости?,RAID 1,RAID 0,RAID 5,JBOD,,,1,RAID 1 хранит копии данных на зеркальных дисках,starter-pack-v1
+hw-hard-004,hardware,hard,Какой параметр памяти влияет на задержку ответа модуля?,CAS latency,MAC address,MTU,Core count,,,1,CAS latency описывает задержку доступа к столбцу памяти,starter-pack-v1
+hw-hard-005,hardware,hard,Что обычно делает TPM?,Хранит криптографические ключи и измерения доверия,Ускоряет вентиляторы,Заменяет RAM,Выдает IP-адрес,,,1,TPM используется для безопасного хранения ключей и проверки состояния платформы,starter-pack-v1
