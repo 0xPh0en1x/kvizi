@@ -394,8 +394,9 @@ class KviziService:
             self._reply(message, self._format_me(int(user["id"])))
             return {"ok": True, "command": command}
         if command == "/top":
-            self._reply(message, self._format_top())
-            return {"ok": True, "command": command}
+            topic_key = args[0].strip().lower() if args else None
+            self._reply(message, self._format_top(topic_key))
+            return {"ok": True, "command": command, "topic_key": topic_key}
         if command == "/rules":
             self._reply(message, copy.RULES_TEXT)
             return {"ok": True, "command": command}
@@ -705,7 +706,25 @@ class KviziService:
             f"Верно/ошибки: {score['correct_count']}/{score['wrong_count']}"
         )
 
-    def _format_top(self) -> str:
+    def _format_top(self, topic_key: str | None = None) -> str:
+        if topic_key:
+            rows = self.repository.topic_leaderboard(self.settings.season_name, topic_key)
+            known_topics = self._known_topic_keys()
+            if not rows and known_topics and topic_key not in known_topics:
+                return (
+                    f"Сектор {topic_key} не найден. "
+                    f"Доступно: {', '.join(sorted(known_topics))}."
+                )
+            if not rows:
+                return f"Табло сектора {topic_key}:\nПока никто не набрал очки в этом секторе."
+            lines = [f"Табло сектора {topic_key}:"]
+            for index, row in enumerate(rows, start=1):
+                lines.append(
+                    f"{index}. {self._display_name(row)} - {row['points']} "
+                    f"(верно {row['correct_count']}/{row['answered_count']})"
+                )
+            return "\n".join(lines)
+
         rows = self.repository.leaderboard(self.settings.season_name)
         if not rows:
             return copy.top_header(self.settings.season_name) + "\nПока никто не набрал очки."
@@ -716,6 +735,9 @@ class KviziService:
                 f"(серия {row['current_streak']}, верно {row['correct_count']})"
             )
         return "\n".join(lines)
+
+    def _known_topic_keys(self) -> set[str]:
+        return self.question_bank.topics() | {str(topic["topic_key"]) for topic in self.repository.list_topics()}
 
     def _format_status(self) -> str:
         now_iso = utc_now_iso()

@@ -21,6 +21,7 @@
 - Challenge questions with cost/reward and unanswered challenge settlement on poll close.
 - Daily summary posting and idempotent `/cron/daily`.
 - Automatic admin JSON backup via `/cron/backup`.
+- Topic-specific leaderboards via `/top <topic_key>`.
 
 ### Question operations
 

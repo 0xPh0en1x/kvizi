@@ -63,6 +63,7 @@ class KviziRepository:
             connection.execute("PRAGMA journal_mode = WAL")
             connection.executescript(SCHEMA_SQL)
             self._migrate_poll_columns(connection)
+            self._migrate_answer_columns(connection)
 
     def _migrate_poll_columns(self, connection: sqlite3.Connection) -> None:
         existing = {
@@ -77,6 +78,14 @@ class KviziRepository:
         for name, definition in columns.items():
             if name not in existing:
                 connection.execute(f"ALTER TABLE polls ADD COLUMN {name} {definition}")
+
+    def _migrate_answer_columns(self, connection: sqlite3.Connection) -> None:
+        existing = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(answers)").fetchall()
+        }
+        if "season" not in existing:
+            connection.execute("ALTER TABLE answers ADD COLUMN season TEXT NOT NULL DEFAULT 'main'")
 
     def upsert_user(self, user: dict[str, Any]) -> None:
         user_id = user.get("id")
@@ -381,6 +390,33 @@ class KviziRepository:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def topic_leaderboard(self, season: str, topic_key: str, limit: int = 10) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT
+                    a.user_id,
+                    users.username,
+                    users.first_name,
+                    users.last_name,
+                    COALESCE(SUM(a.points_delta), 0) AS points,
+                    COALESCE(SUM(CASE WHEN a.is_correct = 1 THEN 1 ELSE 0 END), 0) AS correct_count,
+                    COALESCE(SUM(CASE WHEN a.is_correct = 0 THEN 1 ELSE 0 END), 0) AS wrong_count,
+                    COUNT(*) AS answered_count,
+                    MAX(a.answered_at) AS last_answered_at
+                FROM answers AS a
+                JOIN polls AS p ON p.poll_id = a.poll_id
+                LEFT JOIN users ON users.user_id = a.user_id
+                WHERE a.season = ?
+                  AND p.topic_key = ?
+                GROUP BY a.user_id
+                ORDER BY points DESC, correct_count DESC, answered_count ASC, last_answered_at ASC
+                LIMIT ?
+                """,
+                (season, topic_key, limit),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def daily_summary(self, start_iso: str, end_iso: str, limit: int = 3) -> dict[str, Any]:
         with self.connect() as connection:
             totals = dict(
@@ -599,14 +635,15 @@ class KviziRepository:
             connection.execute(
                 """
                 INSERT INTO answers (
-                    poll_id, user_id, selected_option_ids, is_correct, stake,
+                    poll_id, user_id, season, selected_option_ids, is_correct, stake,
                     points_delta, streak_bonus, answered_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     poll_id,
                     user_id,
+                    season,
                     ",".join(str(item) for item in option_ids),
                     1 if is_correct else 0,
                     stake,
@@ -691,12 +728,12 @@ class KviziRepository:
             connection.execute(
                 """
                 INSERT INTO answers (
-                    poll_id, user_id, selected_option_ids, is_correct, stake,
+                    poll_id, user_id, season, selected_option_ids, is_correct, stake,
                     points_delta, streak_bonus, answered_at
                 )
-                VALUES (?, ?, '', 0, 1, ?, 0, ?)
+                VALUES (?, ?, ?, '', 0, 1, ?, 0, ?)
                 """,
-                (poll["poll_id"], user_id, delta, now_iso),
+                (poll["poll_id"], user_id, season, delta, now_iso),
             )
             connection.execute(
                 """
@@ -841,6 +878,7 @@ CREATE TABLE IF NOT EXISTS polls (
 CREATE TABLE IF NOT EXISTS answers (
     poll_id TEXT NOT NULL,
     user_id INTEGER NOT NULL,
+    season TEXT NOT NULL DEFAULT 'main',
     selected_option_ids TEXT NOT NULL,
     is_correct INTEGER NOT NULL,
     stake INTEGER NOT NULL,

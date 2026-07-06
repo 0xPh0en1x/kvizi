@@ -192,6 +192,81 @@ def test_post_bet_answer_updates_score_and_is_idempotent(tmp_path: Path) -> None
     score = repository.get_score("main", 42)
     assert score["points"] == 30
     assert score["correct_count"] == 1
+    with repository.connect() as connection:
+        answer = connection.execute("SELECT season FROM answers WHERE poll_id = ?", ("poll-1",)).fetchone()
+    assert answer["season"] == "main"
+
+
+def test_top_command_can_filter_by_topic(tmp_path: Path) -> None:
+    service, repository, telegram = make_service(tmp_path)
+    _seed_topic_answer(
+        repository,
+        poll_id="network-ada",
+        topic_key="network",
+        user_id=42,
+        username="ada",
+        difficulty="normal",
+    )
+    _seed_topic_answer(
+        repository,
+        poll_id="security-linus",
+        topic_key="security",
+        user_id=99,
+        username="linus",
+        difficulty="hard",
+    )
+    _seed_topic_answer(
+        repository,
+        poll_id="network-old",
+        topic_key="network",
+        user_id=100,
+        username="oldtimer",
+        difficulty="hard",
+        season="old",
+    )
+
+    result = service.handle_update(
+        {
+            "update_id": 90,
+            "message": {
+                "message_id": 80,
+                "message_thread_id": 101,
+                "chat": {"id": "-1001"},
+                "from": {"id": 42, "first_name": "Ada"},
+                "text": "/top network",
+            },
+        }
+    )
+
+    assert result["command"] == "/top"
+    assert result["topic_key"] == "network"
+    text = telegram.sent_messages[-1]["text"]
+    assert "Табло сектора network:" in text
+    assert "@ada - 10" in text
+    assert "@linus" not in text
+    assert "@oldtimer" not in text
+
+
+def test_top_command_reports_unknown_topic(tmp_path: Path) -> None:
+    service, _repository, telegram = make_service(tmp_path)
+
+    result = service.handle_update(
+        {
+            "update_id": 91,
+            "message": {
+                "message_id": 80,
+                "message_thread_id": 101,
+                "chat": {"id": "-1001"},
+                "from": {"id": 42, "first_name": "Ada"},
+                "text": "/top unknown",
+            },
+        }
+    )
+
+    assert result["command"] == "/top"
+    text = telegram.sent_messages[-1]["text"]
+    assert "Сектор unknown не найден." in text
+    assert "network" in text
 
 
 def test_post_question_sends_announcement_with_private_group_link(tmp_path: Path) -> None:
@@ -1341,6 +1416,39 @@ def _seed_poll(repository: KviziRepository, difficulty: str = "normal") -> str:
         explanation="",
     )
     return "seed-poll"
+
+
+def _seed_topic_answer(
+    repository: KviziRepository,
+    *,
+    poll_id: str,
+    topic_key: str,
+    user_id: int,
+    username: str,
+    difficulty: str,
+    season: str = "main",
+    option_ids: list[int] | None = None,
+) -> str:
+    repository.create_poll(
+        poll_id=poll_id,
+        telegram_message_id=1000 + user_id,
+        question_id=f"question-{poll_id}",
+        topic_key=topic_key,
+        message_thread_id=101,
+        correct_option_id=0,
+        difficulty=difficulty,
+        opened_at="2026-07-05T20:00:00+00:00",
+        closes_at="2026-07-05T21:00:00+00:00",
+        explanation="",
+    )
+    repository.record_answer(
+        season=season,
+        poll_id=poll_id,
+        user={"id": user_id, "username": username, "first_name": username},
+        option_ids=[0] if option_ids is None else option_ids,
+        now_iso="2026-07-05T20:01:00+00:00",
+    )
+    return poll_id
 
 
 def _seed_today_answer(
