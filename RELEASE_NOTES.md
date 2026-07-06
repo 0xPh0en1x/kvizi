@@ -24,6 +24,7 @@
 - Topic-specific leaderboards via `/top <topic_key>`.
 - Configurable difficulty points and challenge cost/reward via env.
 - Cleaner `/rules` ordering and `/kvizi_config` for checking active scoring config.
+- Production observability commands: `/kvizi_recent` and `/kvizi_errors`.
 
 ### Question operations
 

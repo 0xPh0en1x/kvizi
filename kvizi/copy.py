@@ -77,6 +77,8 @@ ADMIN_HELP_TEXT = (
     "/kvizi_bind <topic_key> <weight> - привязать текущий топик\n"
     "/kvizi_topics - список привязанных топиков\n"
     "/kvizi_config - текущий баланс очков и вызовов\n"
+    "/kvizi_recent - последние вопросы и ответы\n"
+    "/kvizi_errors - последние ошибки Telegram/cron\n"
     "/kvizi_status - подробный статус\n"
     "/kvizi_status_compact - короткий статус\n"
     "/kvizi_questions_status - покрытие questions.csv\n"

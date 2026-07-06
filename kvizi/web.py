@@ -50,6 +50,11 @@ def create_app(
         try:
             return jsonify(service.handle_update(update))
         except TelegramApiError as exc:
+            repository.record_error_event(
+                source="telegram",
+                event="webhook_update_failed",
+                message=str(exc),
+            )
             app.logger.warning("Telegram API failure while handling webhook update: %s", exc)
             return jsonify({"ok": False, "telegram_error": str(exc)}), 503
 
@@ -77,7 +82,14 @@ def create_app(
                 }
             )
         except Exception as exc:
-            repository.record_cron_run(started_at, utc_now_iso(), "failed", str(exc))
+            finished_at = utc_now_iso()
+            repository.record_cron_run(started_at, finished_at, "failed", str(exc))
+            repository.record_error_event(
+                source="cron",
+                event="tick_failed",
+                message=str(exc),
+                created_at=finished_at,
+            )
             raise
 
     @app.post("/cron/maintenance")
@@ -99,7 +111,14 @@ def create_app(
                 }
             )
         except Exception as exc:
-            repository.record_cron_run(started_at, utc_now_iso(), "maintenance_failed", str(exc))
+            finished_at = utc_now_iso()
+            repository.record_cron_run(started_at, finished_at, "maintenance_failed", str(exc))
+            repository.record_error_event(
+                source="cron",
+                event="maintenance_failed",
+                message=str(exc),
+                created_at=finished_at,
+            )
             raise
 
     @app.post("/cron/daily")
@@ -121,7 +140,14 @@ def create_app(
                 }
             )
         except Exception as exc:
-            repository.record_cron_run(started_at, utc_now_iso(), "daily_failed", str(exc))
+            finished_at = utc_now_iso()
+            repository.record_cron_run(started_at, finished_at, "daily_failed", str(exc))
+            repository.record_error_event(
+                source="cron",
+                event="daily_failed",
+                message=str(exc),
+                created_at=finished_at,
+            )
             raise
 
     @app.post("/cron/backup")
@@ -158,7 +184,14 @@ def create_app(
                 }
             )
         except Exception as exc:
-            repository.record_cron_run(started_at, utc_now_iso(), "backup_failed", str(exc))
+            finished_at = utc_now_iso()
+            repository.record_cron_run(started_at, finished_at, "backup_failed", str(exc))
+            repository.record_error_event(
+                source="cron",
+                event="backup_failed",
+                message=str(exc),
+                created_at=finished_at,
+            )
             raise
 
     return app

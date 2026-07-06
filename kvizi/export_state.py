@@ -11,6 +11,7 @@ DEFAULT_LIMITS = {
     "polls": 100,
     "answers": 250,
     "bets": 250,
+    "error_events": 100,
 }
 
 
@@ -75,6 +76,13 @@ def export_state(database_path: Path, include_processed_updates: bool = False) -
                 "cron_runs",
                 order_by="id DESC",
                 limit=DEFAULT_LIMITS["cron_runs"],
+            ),
+            "recent_error_events": _select_all(
+                connection,
+                tables,
+                "error_events",
+                order_by="id DESC",
+                limit=DEFAULT_LIMITS["error_events"],
             ),
         }
 

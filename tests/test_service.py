@@ -771,6 +771,96 @@ def test_admin_status_reports_loaded_questions_topics_active_polls_and_cron(tmp_
     assert "Последний cron: posted" in text
 
 
+def test_admin_recent_reports_recent_questions_and_answers(tmp_path: Path) -> None:
+    service, repository, telegram = make_service(tmp_path)
+    repository.upsert_user({"id": 42, "username": "ada", "first_name": "Ada"})
+    repository.upsert_user({"id": 43, "first_name": "Bob"})
+    repository.create_poll(
+        poll_id="poll-recent",
+        telegram_message_id=555,
+        question_id="q1",
+        topic_key="network",
+        message_thread_id=101,
+        correct_option_id=0,
+        difficulty="normal",
+        opened_at="2026-07-05T20:00:00+00:00",
+        closes_at="2999-01-01T00:00:00+00:00",
+        explanation="",
+    )
+    repository.record_answer(
+        season="main",
+        poll_id="poll-recent",
+        user={"id": 42, "username": "ada", "first_name": "Ada"},
+        option_ids=[0],
+        now_iso="2026-07-05T20:00:10+00:00",
+    )
+    repository.record_answer(
+        season="main",
+        poll_id="poll-recent",
+        user={"id": 43, "first_name": "Bob"},
+        option_ids=[1],
+        now_iso="2026-07-05T20:00:20+00:00",
+    )
+
+    result = service.handle_update(
+        {
+            "update_id": 51,
+            "message": {
+                "message_id": 80,
+                "message_thread_id": 101,
+                "chat": {"id": "-1001"},
+                "from": {"id": 7, "first_name": "Admin"},
+                "text": "/kvizi_recent",
+            },
+        }
+    )
+
+    assert result["command"] == "/kvizi_recent"
+    text = telegram.sent_messages[-1]["text"]
+    assert "Последние вопросы Квизи:" in text
+    assert "05.07.2026 23:00:00 MSK | network normal | active" in text
+    assert "ответов 2, верно/ошибки 1/1" in text
+    assert "@ada" in text
+    assert "Bob" in text
+
+
+def test_admin_errors_reports_error_events_and_failed_cron(tmp_path: Path) -> None:
+    service, repository, telegram = make_service(tmp_path)
+    repository.record_error_event(
+        source="telegram",
+        event="send_message_failed",
+        message="proxy 503",
+        created_at="2026-07-05T20:00:00+00:00",
+    )
+    repository.record_cron_run(
+        "2026-07-05T20:10:00+00:00",
+        "2026-07-05T20:10:01+00:00",
+        "backup_failed",
+        "bot can't initiate conversation",
+    )
+
+    result = service.handle_update(
+        {
+            "update_id": 52,
+            "message": {
+                "message_id": 81,
+                "message_thread_id": 101,
+                "chat": {"id": "-1001"},
+                "from": {"id": 7, "first_name": "Admin"},
+                "text": "/kvizi_errors",
+            },
+        }
+    )
+
+    assert result["command"] == "/kvizi_errors"
+    text = telegram.sent_messages[-1]["text"]
+    assert "Последние ошибки Квизи:" in text
+    assert "События:" in text
+    assert "05.07.2026 23:00:00 MSK | telegram/send_message_failed: proxy 503" in text
+    assert "Cron:" in text
+    assert "05.07.2026 23:10:01 MSK | backup_failed: bot can't initiate conversation" in text
+
+
 def test_admin_help_lists_commands_and_cron_endpoints(tmp_path: Path) -> None:
     service, _repository, telegram = make_service(tmp_path)
 
@@ -791,6 +881,8 @@ def test_admin_help_lists_commands_and_cron_endpoints(tmp_path: Path) -> None:
     text = telegram.sent_messages[-1]["text"]
     assert "Админ-пульт Квизи:" in text
     assert "/kvizi_status_compact" in text
+    assert "/kvizi_recent" in text
+    assert "/kvizi_errors" in text
     assert "/kvizi_questions_status" in text
     assert "/kvizi_questions_template" in text
     assert "/kvizi_upload_questions" in text
@@ -1507,6 +1599,10 @@ def test_webhook_returns_503_and_allows_retry_when_telegram_reply_fails(tmp_path
     assert response.status_code == 503
     assert payload["ok"] is False
     assert "proxy 503" in payload["telegram_error"]
+    errors = repository.recent_error_events()
+    assert errors[-1]["source"] == "telegram"
+    assert errors[-1]["event"] == "webhook_update_failed"
+    assert "proxy 503" in errors[-1]["message"]
 
     retried = client.post(
         f"/telegram/{settings.webhook_secret}",

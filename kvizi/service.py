@@ -135,7 +135,13 @@ class KviziService:
                     mime_type="application/json",
                 )
             except TelegramApiError as exc:
-                errors.append(f"{admin_id}: {exc}")
+                error_message = f"{admin_id}: {exc}"
+                self.repository.record_error_event(
+                    source="telegram",
+                    event="backup_send_failed",
+                    message=error_message,
+                )
+                errors.append(error_message)
                 continue
             sent_count += 1
 
@@ -161,7 +167,12 @@ class KviziService:
                     chat_id=self.settings.telegram_chat_id,
                     message_id=int(poll["telegram_message_id"]),
                 )
-            except TelegramApiError:
+            except TelegramApiError as exc:
+                self.repository.record_error_event(
+                    source="telegram",
+                    event="stop_poll_failed",
+                    message=str(exc),
+                )
                 pass
             self.repository.mark_poll_closed(str(poll["poll_id"]))
         return len(expired)
@@ -515,6 +526,14 @@ class KviziService:
             )
             return {"ok": True, "command": command}
 
+        if command == "/kvizi_recent":
+            self._reply(message, self._format_recent())
+            return {"ok": True, "command": command}
+
+        if command == "/kvizi_errors":
+            self._reply(message, self._format_errors())
+            return {"ok": True, "command": command}
+
         if command == "/kvizi_questions_status":
             self._reply(message, self._format_questions_status())
             return {"ok": True, "command": command}
@@ -691,7 +710,12 @@ class KviziService:
                     chat_id=self.settings.telegram_chat_id,
                     message_id=int(poll["telegram_message_id"]),
                 )
-            except TelegramApiError:
+            except TelegramApiError as exc:
+                self.repository.record_error_event(
+                    source="telegram",
+                    event="close_here_stop_poll_failed",
+                    message=str(exc),
+                )
                 pass
             self.repository.mark_poll_closed(str(poll["poll_id"]))
             closed += 1
@@ -873,6 +897,64 @@ class KviziService:
             lines.append(
                 f"Последний cron: {cron['status']} в {self._short_dt(cron['finished_at'])}"
             )
+
+        return "\n".join(lines)
+
+    def _format_recent(self) -> str:
+        polls = self.repository.recent_poll_summaries(limit=10)
+        lines = ["Последние вопросы Квизи:"]
+        if not polls:
+            lines.append("- пока вопросов нет")
+            return "\n".join(lines)
+
+        for poll in polls:
+            answers = poll["answers"]
+            correct_count = sum(1 for answer in answers if int(answer["is_correct"]))
+            wrong_count = len(answers) - correct_count
+            answer_text = "ответов нет"
+            if answers:
+                names = [self._display_name(answer) for answer in answers[:4]]
+                if len(answers) > 4:
+                    names.append(f"ещё {len(answers) - 4}")
+                answer_text = (
+                    f"ответов {len(answers)}, верно/ошибки {correct_count}/{wrong_count}; "
+                    f"{', '.join(names)}"
+                )
+            challenge = ""
+            if int(poll.get("request_cost") or 0) > 0:
+                challenge = f", challenge cost={poll['request_cost']} reward={poll['request_reward']}"
+            lines.append(
+                f"- {self._short_dt(str(poll['opened_at']))} | "
+                f"{poll['topic_key']} {poll['difficulty']} | "
+                f"{poll['status']} | {answer_text}{challenge}"
+            )
+
+        return "\n".join(lines)
+
+    def _format_errors(self) -> str:
+        events = self.repository.recent_error_events(limit=10)
+        failed_cron = self.repository.recent_failed_cron_runs(limit=10)
+        lines = ["Последние ошибки Квизи:"]
+
+        if not events and not failed_cron:
+            lines.append("- ошибок нет")
+            return "\n".join(lines)
+
+        if events:
+            lines.append("События:")
+            for event in events:
+                lines.append(
+                    f"- {self._short_dt(str(event['created_at']))} | "
+                    f"{event['source']}/{event['event']}: {event['message']}"
+                )
+
+        if failed_cron:
+            lines.append("Cron:")
+            for run in failed_cron:
+                lines.append(
+                    f"- {self._short_dt(str(run['finished_at']))} | "
+                    f"{run['status']}: {run['message']}"
+                )
 
         return "\n".join(lines)
 

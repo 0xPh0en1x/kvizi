@@ -524,6 +524,81 @@ class KviziRepository:
             "challenge_players": [dict(row) for row in challenge_players],
         }
 
+    def recent_poll_summaries(self, limit: int = 10) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT
+                    p.poll_id,
+                    p.telegram_message_id,
+                    p.question_id,
+                    p.topic_key,
+                    p.message_thread_id,
+                    p.difficulty,
+                    p.opened_at,
+                    p.closes_at,
+                    p.closed_at,
+                    p.status,
+                    p.requested_by,
+                    p.request_cost,
+                    p.request_reward,
+                    a.user_id AS answer_user_id,
+                    a.is_correct,
+                    a.points_delta,
+                    a.answered_at,
+                    u.username,
+                    u.first_name,
+                    u.last_name
+                FROM (
+                    SELECT *
+                    FROM polls
+                    ORDER BY opened_at DESC
+                    LIMIT ?
+                ) AS p
+                LEFT JOIN answers AS a ON a.poll_id = p.poll_id
+                LEFT JOIN users AS u ON u.user_id = a.user_id
+                ORDER BY p.opened_at DESC, a.answered_at ASC, a.user_id ASC
+                """,
+                (limit,),
+            ).fetchall()
+
+        summaries: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            poll_id = str(row["poll_id"])
+            summary = summaries.setdefault(
+                poll_id,
+                {
+                    "poll_id": poll_id,
+                    "telegram_message_id": row["telegram_message_id"],
+                    "question_id": row["question_id"],
+                    "topic_key": row["topic_key"],
+                    "message_thread_id": row["message_thread_id"],
+                    "difficulty": row["difficulty"],
+                    "opened_at": row["opened_at"],
+                    "closes_at": row["closes_at"],
+                    "closed_at": row["closed_at"],
+                    "status": row["status"],
+                    "requested_by": row["requested_by"],
+                    "request_cost": row["request_cost"],
+                    "request_reward": row["request_reward"],
+                    "answers": [],
+                },
+            )
+            if row["answer_user_id"] is not None:
+                summary["answers"].append(
+                    {
+                        "user_id": row["answer_user_id"],
+                        "username": row["username"],
+                        "first_name": row["first_name"],
+                        "last_name": row["last_name"],
+                        "is_correct": row["is_correct"],
+                        "points_delta": row["points_delta"],
+                        "answered_at": row["answered_at"],
+                    }
+                )
+
+        return list(summaries.values())
+
     def has_active_challenge(self, user_id: int, now_iso: str) -> bool:
         with self.connect() as connection:
             row = connection.execute(
@@ -799,6 +874,58 @@ class KviziRepository:
             ).fetchone()
         return _row_to_dict(row)
 
+    def recent_failed_cron_runs(self, limit: int = 10) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM cron_runs
+                WHERE status LIKE '%failed%' OR status = 'backup_partial'
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def record_error_event(
+        self,
+        *,
+        source: str,
+        event: str,
+        message: str,
+        created_at: str | None = None,
+    ) -> None:
+        trimmed_message = message.strip()
+        if len(trimmed_message) > 1000:
+            trimmed_message = trimmed_message[:997] + "..."
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO error_events (source, event, message, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    source.strip() or "unknown",
+                    event.strip() or "unknown",
+                    trimmed_message,
+                    created_at or utc_now_iso(),
+                ),
+            )
+
+    def recent_error_events(self, limit: int = 10) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM error_events
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def set_bot_setting(self, key: str, value: str) -> None:
         with self.connect() as connection:
             connection.execute(
@@ -928,6 +1055,14 @@ CREATE TABLE IF NOT EXISTS cron_runs (
     message TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS error_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source TEXT NOT NULL,
+    event TEXT NOT NULL,
+    message TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS processed_updates (
     update_id INTEGER PRIMARY KEY,
     processed_at TEXT NOT NULL
@@ -941,4 +1076,5 @@ CREATE TABLE IF NOT EXISTS bot_settings (
 
 CREATE INDEX IF NOT EXISTS idx_polls_status_closes_at ON polls(status, closes_at);
 CREATE INDEX IF NOT EXISTS idx_scores_leaderboard ON scores(season, points DESC, correct_count DESC);
+CREATE INDEX IF NOT EXISTS idx_error_events_created_at ON error_events(created_at DESC);
 """
