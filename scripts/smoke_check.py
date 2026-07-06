@@ -170,7 +170,7 @@ def check_flask_routes(settings: Settings, report: SmokeReport) -> None:
     else:
         report.fail(f"/health payload not healthy: {payload}")
 
-    for endpoint in ("/cron/tick", "/cron/maintenance", "/cron/daily"):
+    for endpoint in ("/cron/tick", "/cron/maintenance", "/cron/daily", "/cron/backup"):
         response = client.post(endpoint)
         if response.status_code == 403:
             report.ok(f"{endpoint} rejects missing cron secret")

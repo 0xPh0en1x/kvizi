@@ -40,11 +40,13 @@ ADMIN_HELP_TEXT = (
     "POST /cron/tick - плановый вопрос\n"
     "POST /cron/maintenance - закрыть истёкшие poll\n"
     "POST /cron/daily - автоматические итоги дня\n"
+    "POST /cron/backup - JSON backup админам\n"
     "\n"
     "Локально:\n"
     "python scripts/local_cron.py tick\n"
     "python scripts/local_cron.py maintenance\n"
-    "python scripts/local_cron.py daily"
+    "python scripts/local_cron.py daily\n"
+    "python scripts/local_cron.py backup"
 )
 
 

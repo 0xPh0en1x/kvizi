@@ -20,6 +20,7 @@
 - Scoring with base difficulty points, streak bonuses, x2/x3 bets, and non-negative score floor.
 - Challenge questions with cost/reward and unanswered challenge settlement on poll close.
 - Daily summary posting and idempotent `/cron/daily`.
+- Automatic admin JSON backup via `/cron/backup`.
 
 ### Question operations
 
@@ -44,4 +45,3 @@ python -m pytest -q -> 44 passed
 python scripts/validate_questions.py -> OK, warnings expected for sample CSV
 python scripts/smoke_check.py -> failures=0, warnings expected locally
 ```
-

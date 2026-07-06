@@ -163,6 +163,15 @@ https://YOUR_USERNAME.pythonanywhere.com/cron/daily
 Once per day in the evening by `Europe/Moscow`. Posts daily summary once per
 local date.
 
+```text
+https://YOUR_USERNAME.pythonanywhere.com/cron/backup
+```
+
+Once per day or every few days. Sends JSON state export to every user id from
+`KVIZI_ADMIN_IDS`. Each admin must open a private chat with the bot first,
+otherwise Telegram will reject that delivery while other admins can still receive
+the backup.
+
 ## 7. Rollback and maintenance
 
 Question CSV workflow:

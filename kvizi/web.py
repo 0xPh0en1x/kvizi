@@ -124,4 +124,41 @@ def create_app(
             repository.record_cron_run(started_at, utc_now_iso(), "daily_failed", str(exc))
             raise
 
+    @app.post("/cron/backup")
+    def cron_backup():
+        if request.headers.get("X-Kvizi-Cron-Secret") != settings.cron_secret:
+            abort(403)
+
+        started_at = utc_now_iso()
+        try:
+            result = service.post_backup_export()
+            if result.total_count == 0:
+                status = "backup_skipped"
+            elif result.sent_count == result.total_count:
+                status = "backup_sent"
+            elif result.sent_count > 0:
+                status = "backup_partial"
+            else:
+                status = "backup_failed"
+            message = (
+                f"Backup {result.filename}: sent={result.sent_count}/{result.total_count}, "
+                f"failed={result.failed_count}"
+            )
+            repository.record_cron_run(started_at, utc_now_iso(), status, message)
+            return jsonify(
+                {
+                    "ok": result.sent_count > 0 and result.failed_count == 0,
+                    "complete": result.sent_count == result.total_count and result.total_count > 0,
+                    "filename": result.filename,
+                    "sent": result.sent_count,
+                    "failed": result.failed_count,
+                    "admin_ids": result.admin_ids,
+                    "errors": result.errors,
+                    "message": message,
+                }
+            )
+        except Exception as exc:
+            repository.record_cron_run(started_at, utc_now_iso(), "backup_failed", str(exc))
+            raise
+
     return app

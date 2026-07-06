@@ -41,6 +41,30 @@ class DailySummaryResult:
     summary_date: str
 
 
+@dataclass(frozen=True)
+class StateExportFile:
+    filename: str
+    content: bytes
+    caption: str
+
+
+@dataclass(frozen=True)
+class BackupExportResult:
+    sent_count: int
+    failed_count: int
+    admin_ids: list[int]
+    filename: str
+    errors: list[str]
+
+    @property
+    def total_count(self) -> int:
+        return len(self.admin_ids)
+
+    @property
+    def ok(self) -> bool:
+        return self.sent_count > 0 and self.failed_count == 0
+
+
 class KviziService:
     def __init__(
         self,
@@ -91,6 +115,37 @@ class KviziService:
         if remember_sent:
             self.repository.set_bot_setting(setting_key, summary_date)
         return DailySummaryResult(True, text, summary_date)
+
+    def post_backup_export(self) -> BackupExportResult:
+        export_file = self._build_state_export(
+            filename_prefix="kvizi-backup",
+            caption_prefix="Backup Квизи",
+        )
+        admin_ids = sorted(self.settings.admin_ids)
+        sent_count = 0
+        errors: list[str] = []
+
+        for admin_id in admin_ids:
+            try:
+                self.telegram.send_document(
+                    chat_id=str(admin_id),
+                    filename=export_file.filename,
+                    content=export_file.content,
+                    caption=export_file.caption,
+                    mime_type="application/json",
+                )
+            except TelegramApiError as exc:
+                errors.append(f"{admin_id}: {exc}")
+                continue
+            sent_count += 1
+
+        return BackupExportResult(
+            sent_count=sent_count,
+            failed_count=len(errors),
+            admin_ids=admin_ids,
+            filename=export_file.filename,
+            errors=errors,
+        )
 
     def close_expired_polls(self) -> int:
         now_iso = utc_now_iso()
@@ -551,6 +606,29 @@ class KviziService:
         )
 
     def _send_state_export(self, message: dict[str, Any], include_processed_updates: bool = False) -> None:
+        export_file = self._build_state_export(
+            include_processed_updates=include_processed_updates,
+            filename_prefix="kvizi-state",
+            caption_prefix="Экспорт Квизи",
+        )
+        thread_id = message.get("message_thread_id")
+        chat_id = str((message.get("chat") or {}).get("id") or self.settings.telegram_chat_id)
+        self.telegram.send_document(
+            chat_id=chat_id,
+            message_thread_id=int(thread_id) if thread_id is not None else None,
+            filename=export_file.filename,
+            content=export_file.content,
+            caption=export_file.caption,
+            mime_type="application/json",
+        )
+
+    def _build_state_export(
+        self,
+        *,
+        include_processed_updates: bool = False,
+        filename_prefix: str,
+        caption_prefix: str,
+    ) -> StateExportFile:
         state = export_state(
             self.settings.database_path,
             include_processed_updates=include_processed_updates,
@@ -559,23 +637,14 @@ class KviziService:
             json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
         ).encode("utf-8")
         exported_at = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        filename = f"kvizi-state-{exported_at}.json"
+        filename = f"{filename_prefix}-{exported_at}.json"
         caption = (
-            "Экспорт Квизи: "
+            f"{caption_prefix}: "
             f"users={len(state['users'])}, "
             f"scores={len(state['scores'])}, "
             f"active_polls={len(state['active_polls'])}"
         )
-        thread_id = message.get("message_thread_id")
-        chat_id = str((message.get("chat") or {}).get("id") or self.settings.telegram_chat_id)
-        self.telegram.send_document(
-            chat_id=chat_id,
-            message_thread_id=int(thread_id) if thread_id is not None else None,
-            filename=filename,
-            content=content,
-            caption=caption,
-            mime_type="application/json",
-        )
+        return StateExportFile(filename=filename, content=content, caption=caption)
 
     def _close_active_polls_here(self, message: dict[str, Any], thread_id: int | None) -> int:
         if thread_id is None:

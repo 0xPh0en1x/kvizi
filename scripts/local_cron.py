@@ -18,6 +18,7 @@ CRON_ENDPOINTS = {
     "tick": "/cron/tick",
     "maintenance": "/cron/maintenance",
     "daily": "/cron/daily",
+    "backup": "/cron/backup",
 }
 
 

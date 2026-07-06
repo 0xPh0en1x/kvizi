@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from io import StringIO
 from pathlib import Path
@@ -58,6 +59,17 @@ class FailOnceSendMessageTelegram(FakeTelegram):
             self.failed_once = True
             raise TelegramApiError("Telegram sendMessage request failed after 3 attempts: proxy 503")
         return super().send_message(**payload)
+
+
+class FailDocumentForChatTelegram(FakeTelegram):
+    def __init__(self, failed_chat_id: str) -> None:
+        super().__init__()
+        self.failed_chat_id = failed_chat_id
+
+    def send_document(self, **payload: Any) -> dict[str, Any]:
+        if str(payload["chat_id"]) == self.failed_chat_id:
+            raise TelegramApiError("bot can't initiate conversation")
+        return super().send_document(**payload)
 
 
 def make_settings(tmp_path: Path) -> Settings:
@@ -535,7 +547,9 @@ def test_admin_help_lists_commands_and_cron_endpoints(tmp_path: Path) -> None:
     assert "/kvizi_backups" in text
     assert "/kvizi_restore_questions" in text
     assert "POST /cron/maintenance" in text
+    assert "POST /cron/backup" in text
     assert "python scripts/local_cron.py daily" in text
+    assert "python scripts/local_cron.py backup" in text
 
 
 def test_admin_questions_status_reports_csv_coverage(tmp_path: Path) -> None:
@@ -1133,6 +1147,63 @@ def test_cron_daily_posts_once_and_skips_duplicate(tmp_path: Path) -> None:
     assert len(telegram.sent_messages) == 1
     assert telegram.sent_messages[0]["message_thread_id"] == 999
     assert "Итоги дня" in telegram.sent_messages[0]["text"]
+
+
+def test_cron_backup_requires_secret_and_sends_json_export_to_admin(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    repository = KviziRepository(settings.database_path)
+    repository.init_db()
+    repository.upsert_user({"id": 7, "username": "adminuser", "first_name": "Admin"})
+    telegram = FakeTelegram()
+    app = create_app(settings=settings, repository=repository, telegram=telegram)  # type: ignore[arg-type]
+    client = app.test_client()
+
+    forbidden = client.post("/cron/backup")
+    ok = client.post("/cron/backup", headers={"X-Kvizi-Cron-Secret": "cron-secret"})
+
+    assert forbidden.status_code == 403
+    assert ok.status_code == 200
+    payload = ok.get_json()
+    assert payload["ok"] is True
+    assert payload["complete"] is True
+    assert payload["sent"] == 1
+    assert payload["failed"] == 0
+    assert payload["admin_ids"] == [7]
+    assert payload["filename"].startswith("kvizi-backup-")
+    assert payload["filename"].endswith(".json")
+
+    assert len(telegram.sent_documents) == 1
+    document = telegram.sent_documents[0]
+    assert document["chat_id"] == "7"
+    assert "message_thread_id" not in document
+    assert document["filename"] == payload["filename"]
+    assert "Backup Квизи" in document["caption"]
+    export_payload = json.loads(document["content"].decode("utf-8"))
+    assert export_payload["users"][0]["username"] == "adminuser"
+    assert "processed_updates" not in export_payload
+    assert repository.latest_cron_run()["status"] == "backup_sent"
+
+
+def test_cron_backup_reports_partial_admin_delivery_failure(tmp_path: Path) -> None:
+    settings = replace(make_settings(tmp_path), admin_ids={7, 8})
+    repository = KviziRepository(settings.database_path)
+    repository.init_db()
+    telegram = FailDocumentForChatTelegram("8")
+    app = create_app(settings=settings, repository=repository, telegram=telegram)  # type: ignore[arg-type]
+    client = app.test_client()
+
+    response = client.post("/cron/backup", headers={"X-Kvizi-Cron-Secret": "cron-secret"})
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["ok"] is False
+    assert payload["complete"] is False
+    assert payload["sent"] == 1
+    assert payload["failed"] == 1
+    assert payload["admin_ids"] == [7, 8]
+    assert "8: bot can't initiate conversation" in payload["errors"]
+    assert [document["chat_id"] for document in telegram.sent_documents] == ["7"]
+    assert repository.latest_cron_run()["status"] == "backup_partial"
 
 
 def test_flask_cron_requires_secret_and_posts_question(tmp_path: Path) -> None:

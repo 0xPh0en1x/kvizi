@@ -270,6 +270,16 @@ X-Kvizi-Cron-Secret: <KVIZI_CRON_SECRET>
 `/cron/daily` идемпотентен по локальной дате: если итоги за день уже отправлены,
 повторный вызов вернёт `posted=false` и не продублирует сообщение.
 
+Для автоматического JSON backup можно создать отдельный POST job:
+
+```text
+https://YOUR_USERNAME.pythonanywhere.com/cron/backup
+```
+
+Он отправляет export состояния каждому `user_id` из `KVIZI_ADMIN_IDS`. Админ
+должен заранее открыть личный чат с ботом, иначе Telegram не даст боту начать
+диалог и этот конкретный admin id попадёт в `errors` ответа cron.
+
 SQLite при `init_db` переводится в WAL-режим, а каждое соединение получает
 `busy_timeout=5000`, чтобы webhook и cron реже конфликтовали при одновременных
 записях.
