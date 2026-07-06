@@ -16,6 +16,37 @@ RULES_TEXT = (
     "Если ошибся или не ответил до закрытия, стоимость вызова сгорает."
 )
 
+ADMIN_HELP_TEXT = (
+    "Админ-пульт Квизи:\n"
+    "/kvizi_help_admin - эта справка\n"
+    "/kvizi_bind <topic_key> <weight> - привязать текущий топик\n"
+    "/kvizi_topics - список привязанных топиков\n"
+    "/kvizi_status - подробный статус\n"
+    "/kvizi_status_compact - короткий статус\n"
+    "/kvizi_questions_status - покрытие questions.csv\n"
+    "/kvizi_questions_template [difficulty] - CSV-шаблон вопросов\n"
+    "/kvizi_postnow [topic_key] - отправить вопрос сейчас\n"
+    "/kvizi_close_here - закрыть активные вопросы в текущем топике\n"
+    "/kvizi_announce_here - назначить топик анонсов\n"
+    "/kvizi_reload - перечитать questions.csv\n"
+    "/kvizi_upload_questions [--check] - проверить или заменить questions.csv\n"
+    "/kvizi_backups - список backup questions.csv\n"
+    "/kvizi_restore_questions <n> - восстановить backup questions.csv\n"
+    "/kvizi_export [--full] - выгрузить состояние JSON\n"
+    "/kvizi_daily - отправить итоги дня сюда\n"
+    "/kvizi_season_reset - сбросить текущий сезон\n"
+    "\n"
+    "Cron endpoints:\n"
+    "POST /cron/tick - плановый вопрос\n"
+    "POST /cron/maintenance - закрыть истёкшие poll\n"
+    "POST /cron/daily - автоматические итоги дня\n"
+    "\n"
+    "Локально:\n"
+    "python scripts/local_cron.py tick\n"
+    "python scripts/local_cron.py maintenance\n"
+    "python scripts/local_cron.py daily"
+)
+
 
 def question_intro(topic_key: str, difficulty: str) -> str:
     base = DIFFICULTY_BASE_POINTS.get(difficulty, 10)

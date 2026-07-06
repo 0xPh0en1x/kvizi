@@ -6,4 +6,5 @@ venv/
 instance/
 data/
 exports/
+backups/
 .env

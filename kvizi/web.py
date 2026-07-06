@@ -76,4 +76,48 @@ def create_app(
             repository.record_cron_run(started_at, utc_now_iso(), "failed", str(exc))
             raise
 
+    @app.post("/cron/maintenance")
+    def cron_maintenance():
+        if request.headers.get("X-Kvizi-Cron-Secret") != settings.cron_secret:
+            abort(403)
+
+        started_at = utc_now_iso()
+        try:
+            closed = service.close_expired_polls()
+            message = f"Closed expired polls: {closed}"
+            status = "maintenance_closed" if closed else "maintenance_ok"
+            repository.record_cron_run(started_at, utc_now_iso(), status, message)
+            return jsonify(
+                {
+                    "ok": True,
+                    "closed": closed,
+                    "message": message,
+                }
+            )
+        except Exception as exc:
+            repository.record_cron_run(started_at, utc_now_iso(), "maintenance_failed", str(exc))
+            raise
+
+    @app.post("/cron/daily")
+    def cron_daily():
+        if request.headers.get("X-Kvizi-Cron-Secret") != settings.cron_secret:
+            abort(403)
+
+        started_at = utc_now_iso()
+        try:
+            result = service.post_daily_summary(force=False, remember_sent=True)
+            status = "daily_posted" if result.posted else "daily_skipped"
+            repository.record_cron_run(started_at, utc_now_iso(), status, result.message)
+            return jsonify(
+                {
+                    "ok": True,
+                    "posted": result.posted,
+                    "message": result.message,
+                    "summary_date": result.summary_date,
+                }
+            )
+        except Exception as exc:
+            repository.record_cron_run(started_at, utc_now_iso(), "daily_failed", str(exc))
+            raise
+
     return app

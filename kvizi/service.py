@@ -1,19 +1,27 @@
 from __future__ import annotations
 
+import csv
 import json
 import random
+import shutil
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
+from io import StringIO
+from pathlib import Path
 from typing import Any
 
 from kvizi import copy
 from kvizi.config import Settings
 from kvizi.database import KviziRepository, utc_now_iso
 from kvizi.export_state import export_state
-from kvizi.questions import Question, QuestionBank, load_questions
+from kvizi.question_report import build_report, find_duplicate_ids, format_report_for_telegram
+from kvizi.questions import DIFFICULTY_PATTERN, QUESTION_COLUMNS, Question, QuestionBank, load_questions
+from kvizi.questions import QuestionValidationError
 from kvizi.routing import TopicRoute, TopicRouter
 from kvizi.scoring import challenge_cost, challenge_reward
 from kvizi.telegram import TelegramApiError, TelegramClient
+
+MAX_QUESTIONS_UPLOAD_BYTES = 2_000_000
 
 
 @dataclass(frozen=True)
@@ -24,6 +32,13 @@ class PostQuestionResult:
     question_id: str | None = None
     poll_id: str | None = None
     question_link: str | None = None
+
+
+@dataclass(frozen=True)
+class DailySummaryResult:
+    posted: bool
+    message: str
+    summary_date: str
 
 
 class KviziService:
@@ -47,6 +62,35 @@ class KviziService:
     def reload_questions(self) -> int:
         self.question_bank = load_questions(self.settings.questions_path)
         return self.question_bank.count()
+
+    def post_daily_summary(
+        self,
+        *,
+        force: bool = False,
+        target_thread_id: int | None = None,
+        remember_sent: bool = True,
+    ) -> DailySummaryResult:
+        self.close_expired_polls()
+        summary_date, start_iso, end_iso = self._daily_window()
+        setting_key = "daily_summary_last_date"
+        if not force and self.repository.get_bot_setting(setting_key) == summary_date:
+            return DailySummaryResult(False, f"Итоги за {summary_date} уже отправлены.", summary_date)
+
+        stats = self.repository.daily_summary(start_iso, end_iso)
+        text = self._format_daily_summary(summary_date, stats)
+        thread_id = target_thread_id
+        if thread_id is None:
+            thread_id = self._announce_thread_id()
+
+        self.telegram.send_message(
+            chat_id=self.settings.telegram_chat_id,
+            message_thread_id=thread_id,
+            text=text,
+            disable_notification=True,
+        )
+        if remember_sent:
+            self.repository.set_bot_setting(setting_key, summary_date)
+        return DailySummaryResult(True, text, summary_date)
 
     def close_expired_polls(self) -> int:
         now_iso = utc_now_iso()
@@ -278,7 +322,7 @@ class KviziService:
         user = message.get("from") or {}
         self.repository.upsert_user(user)
 
-        text = str(message.get("text") or "").strip()
+        text = str(message.get("text") or message.get("caption") or "").strip()
         if not text.startswith("/"):
             return {"ok": True, "ignored": "not_command"}
 
@@ -377,13 +421,51 @@ class KviziService:
         message: dict[str, Any],
         thread_id: int | None,
     ) -> dict[str, Any]:
+        if command == "/kvizi_help_admin":
+            self._reply(message, copy.ADMIN_HELP_TEXT)
+            return {"ok": True, "command": command}
+
         if command == "/kvizi_status":
             self._reply(message, self._format_status())
             return {"ok": True, "command": command}
 
+        if command == "/kvizi_status_compact":
+            self._reply(message, self._format_status_compact())
+            return {"ok": True, "command": command}
+
+        if command == "/kvizi_questions_status":
+            self._reply(message, self._format_questions_status())
+            return {"ok": True, "command": command}
+
+        if command == "/kvizi_questions_template":
+            sent = self._send_questions_template(message, args)
+            return {"ok": True, "command": command, "sent": sent}
+
+        if command == "/kvizi_upload_questions":
+            check_only = "--check" in args
+            uploaded = self._handle_upload_questions(message, check_only=check_only)
+            return {"ok": True, "command": command, "uploaded": uploaded, "check_only": check_only}
+
+        if command == "/kvizi_backups":
+            self._reply(message, self._format_question_backups())
+            return {"ok": True, "command": command}
+
+        if command == "/kvizi_restore_questions":
+            restored = self._handle_restore_questions(args, message)
+            return {"ok": True, "command": command, "restored": restored}
+
         if command == "/kvizi_export":
             self._send_state_export(message, include_processed_updates="--full" in args)
             return {"ok": True, "command": command}
+
+        if command == "/kvizi_daily":
+            thread_id = message.get("message_thread_id")
+            result = self.post_daily_summary(
+                force=True,
+                target_thread_id=int(thread_id) if thread_id is not None else None,
+                remember_sent=False,
+            )
+            return {"ok": True, "command": command, "posted": result.posted}
 
         if command == "/kvizi_close_here":
             closed = self._close_active_polls_here(message, thread_id)
@@ -487,6 +569,7 @@ class KviziService:
             filename=filename,
             content=content,
             caption=caption,
+            mime_type="application/json",
         )
 
     def _close_active_polls_here(self, message: dict[str, Any], thread_id: int | None) -> int:
@@ -623,6 +706,421 @@ class KviziService:
             )
 
         return "\n".join(lines)
+
+    def _format_status_compact(self) -> str:
+        now_iso = utc_now_iso()
+        topics = self.repository.list_topics()
+        active_polls = self.repository.active_polls(now_iso)
+        expired_polls = self.repository.expired_active_polls(now_iso)
+        challenge_count = sum(
+            1
+            for poll in active_polls
+            if int(poll.get("request_cost") or 0) > 0
+            and int(poll.get("requester_answered") or 0) == 0
+        )
+        active_topics = [topic for topic in topics if int(topic["active"]) and int(topic["weight"]) > 0]
+        cron = self.repository.latest_cron_run()
+        announce_thread_id = self._announce_thread_id()
+        difficulties = ", ".join(sorted(self.question_bank.difficulties())) or "нет"
+        busy_topics = self._topic_counts(active_polls)
+
+        lines = [
+            "Статус Квизи compact:",
+            f"Вопросы: {self.question_bank.count()} | сложности: {difficulties}",
+            f"Топики: active={len(active_topics)}/{len(topics)} | анонсы: {announce_thread_id if announce_thread_id is not None else 'не задан'}",
+            f"Poll: active={len(active_polls)}, expired={len(expired_polls)}, challenge={challenge_count}",
+        ]
+
+        if busy_topics:
+            lines.append(f"Занятые топики: {busy_topics}")
+        else:
+            lines.append("Занятые топики: нет")
+
+        if active_polls:
+            next_poll = active_polls[0]
+            lines.append(
+                "Ближайшее закрытие: "
+                f"{next_poll['topic_key']} {next_poll['difficulty']} до {self._short_dt(next_poll['closes_at'])}"
+            )
+        else:
+            lines.append("Ближайшее закрытие: нет")
+
+        if expired_polls:
+            lines.append("Maintenance: есть просроченные poll, дерни /cron/maintenance.")
+        else:
+            lines.append("Maintenance: просроченных poll нет.")
+
+        if cron is None:
+            lines.append("Последний cron: нет")
+        else:
+            lines.append(
+                f"Последний cron: {cron['status']} в {self._short_dt(cron['finished_at'])}"
+            )
+
+        return "\n".join(lines)
+
+    def _format_questions_status(self) -> str:
+        duplicate_ids = find_duplicate_ids(self.settings.questions_path)
+        try:
+            bank = load_questions(self.settings.questions_path)
+        except QuestionValidationError as exc:
+            lines = [
+                "Статус questions.csv:",
+                f"Questions ERROR: {exc}",
+            ]
+            if duplicate_ids:
+                lines.append(f"Duplicate ids: {', '.join(duplicate_ids)}")
+            return "\n".join(lines)
+
+        bound_topics = {str(topic["topic_key"]) for topic in self.repository.list_topics()}
+        lines, warnings = build_report(bank, duplicate_ids, bound_topics)
+        return format_report_for_telegram(lines, warnings)
+
+    def _send_questions_template(self, message: dict[str, Any], args: list[str]) -> bool:
+        difficulties = [arg.strip().lower() for arg in args if arg.strip()]
+        if not difficulties:
+            difficulties = ["easy", "normal", "hard"]
+
+        invalid = [
+            difficulty
+            for difficulty in difficulties
+            if not DIFFICULTY_PATTERN.match(difficulty)
+        ]
+        if invalid:
+            self._reply(
+                message,
+                "Некорректная сложность для шаблона: "
+                f"{', '.join(invalid)}. Используй slug вроде easy, hard, ccna.",
+            )
+            return False
+
+        topics = self._template_topic_keys()
+        if not topics:
+            self._reply(
+                message,
+                "Нет топиков для шаблона. Сначала привяжи топик через /kvizi_bind или добавь вопросы в CSV.",
+            )
+            return False
+
+        content = self._build_questions_template_csv(topics, difficulties)
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        filename = f"questions-template-{timestamp}.csv"
+        caption = (
+            "Шаблон questions.csv: "
+            f"topics={len(topics)}, difficulties={', '.join(difficulties)}. "
+            "Заполни question/options/correct_option_ids и проверь через /kvizi_upload_questions --check."
+        )
+        thread_id = message.get("message_thread_id")
+        chat_id = str((message.get("chat") or {}).get("id") or self.settings.telegram_chat_id)
+        self.telegram.send_document(
+            chat_id=chat_id,
+            message_thread_id=int(thread_id) if thread_id is not None else None,
+            filename=filename,
+            content=content,
+            caption=caption,
+            mime_type="text/csv",
+        )
+        return True
+
+    def _template_topic_keys(self) -> list[str]:
+        bound_topics = [
+            str(topic["topic_key"])
+            for topic in self.repository.active_topics()
+        ]
+        if bound_topics:
+            return sorted(set(bound_topics))
+        return sorted(self.question_bank.topics())
+
+    def _build_questions_template_csv(self, topics: list[str], difficulties: list[str]) -> bytes:
+        buffer = StringIO()
+        writer = csv.DictWriter(buffer, fieldnames=QUESTION_COLUMNS, lineterminator="\n")
+        writer.writeheader()
+        for topic_key in topics:
+            for difficulty in difficulties:
+                writer.writerow(
+                    {
+                        "id": f"{topic_key}_{difficulty}_001",
+                        "topic_key": topic_key,
+                        "difficulty": difficulty,
+                        "question": "",
+                        "option_1": "",
+                        "option_2": "",
+                        "option_3": "",
+                        "option_4": "",
+                        "option_5": "",
+                        "option_6": "",
+                        "correct_option_ids": "",
+                        "explanation": "",
+                        "source": "",
+                    }
+                )
+        return buffer.getvalue().encode("utf-8-sig")
+
+    def _handle_upload_questions(self, message: dict[str, Any], *, check_only: bool = False) -> bool:
+        document = message.get("document") or {}
+        file_id = str(document.get("file_id") or "")
+        filename = str(document.get("file_name") or "")
+        file_size = int(document.get("file_size") or 0)
+
+        if not file_id:
+            self._reply(
+                message,
+                "Прикрепи CSV документом и добавь caption: /kvizi_upload_questions",
+            )
+            return False
+        if filename and not filename.lower().endswith(".csv"):
+            self._reply(message, f"Это не похоже на CSV: {filename}")
+            return False
+        if file_size > MAX_QUESTIONS_UPLOAD_BYTES:
+            self._reply(
+                message,
+                f"CSV слишком большой: {file_size} bytes. Лимит {MAX_QUESTIONS_UPLOAD_BYTES}.",
+            )
+            return False
+
+        try:
+            content = self.telegram.download_file(file_id)
+        except TelegramApiError as exc:
+            self._reply(message, f"Не удалось скачать CSV: {exc}")
+            return False
+
+        if len(content) > MAX_QUESTIONS_UPLOAD_BYTES:
+            self._reply(
+                message,
+                f"CSV слишком большой после скачивания: {len(content)} bytes. Лимит {MAX_QUESTIONS_UPLOAD_BYTES}.",
+            )
+            return False
+
+        temp_path = self._questions_upload_temp_path()
+        temp_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path.write_bytes(content)
+
+        duplicate_ids = find_duplicate_ids(temp_path)
+        try:
+            uploaded_bank = load_questions(temp_path)
+        except (QuestionValidationError, UnicodeDecodeError) as exc:
+            temp_path.unlink(missing_ok=True)
+            lines = [
+                "Questions ERROR: новый CSV не принят.",
+                str(exc),
+                "Текущий questions.csv не заменён.",
+            ]
+            if duplicate_ids:
+                lines.append(f"Duplicate ids: {', '.join(duplicate_ids)}")
+            self._reply(message, "\n".join(lines))
+            return False
+
+        if uploaded_bank.count() == 0:
+            temp_path.unlink(missing_ok=True)
+            self._reply(message, "Questions ERROR: новый CSV пустой. Текущий questions.csv не заменён.")
+            return False
+
+        bound_topics = {str(topic["topic_key"]) for topic in self.repository.list_topics()}
+        lines, warnings = build_report(uploaded_bank, duplicate_ids, bound_topics)
+        report = format_report_for_telegram(lines, warnings)
+
+        if check_only:
+            temp_path.unlink(missing_ok=True)
+            self._reply(
+                message,
+                f"Проверка questions.csv пройдена: {uploaded_bank.count()} вопросов.\n"
+                "Файл не заменён. Для применения отправь без --check.\n\n"
+                f"{report}",
+            )
+            return True
+
+        try:
+            backup_path = self._backup_questions_file()
+            temp_path.replace(self.settings.questions_path)
+            self.question_bank = load_questions(self.settings.questions_path)
+        except OSError as exc:
+            temp_path.unlink(missing_ok=True)
+            self._reply(message, f"Не удалось заменить questions.csv: {exc}")
+            return False
+
+        prefix = [
+            f"questions.csv обновлён: {self.question_bank.count()} вопросов.",
+        ]
+        if backup_path is not None:
+            prefix.append(f"Backup: {self._display_questions_path(backup_path)}")
+        self._reply(message, "\n".join(prefix) + "\n\n" + report)
+        return True
+
+    def _questions_upload_temp_path(self) -> Path:
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        return self.settings.questions_path.with_name(
+            f".{self.settings.questions_path.name}.upload-{timestamp}.tmp"
+        )
+
+    def _backup_questions_file(self) -> Path | None:
+        if not self.settings.questions_path.exists():
+            return None
+
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        backup_dir = self._questions_backup_dir()
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        backup_path = backup_dir / f"questions-{timestamp}.csv"
+        shutil.copy2(self.settings.questions_path, backup_path)
+        return backup_path
+
+    def _format_question_backups(self) -> str:
+        backups = self._list_question_backups()
+        if not backups:
+            return "Backups questions.csv: нет. Они появятся после /kvizi_upload_questions."
+
+        lines = ["Backups questions.csv:"]
+        for index, path in enumerate(backups, start=1):
+            lines.append(f"{index}. {path.name}")
+        lines.append("Восстановить: /kvizi_restore_questions <номер>")
+        return "\n".join(lines)
+
+    def _handle_restore_questions(self, args: list[str], message: dict[str, Any]) -> bool:
+        backups = self._list_question_backups()
+        if not backups:
+            self._reply(message, "Backups questions.csv: нет файлов для восстановления.")
+            return False
+        if not args:
+            self._reply(message, "Формат: /kvizi_restore_questions <номер из /kvizi_backups>")
+            return False
+
+        try:
+            backup_index = int(args[0])
+        except ValueError:
+            self._reply(message, "Номер backup должен быть целым числом.")
+            return False
+
+        if backup_index < 1 or backup_index > len(backups):
+            self._reply(message, f"Backup #{backup_index} не найден. Доступно: 1-{len(backups)}.")
+            return False
+
+        selected_backup = backups[backup_index - 1]
+        duplicate_ids = find_duplicate_ids(selected_backup)
+        try:
+            backup_bank = load_questions(selected_backup)
+        except (QuestionValidationError, UnicodeDecodeError) as exc:
+            lines = [
+                f"Backup #{backup_index} повреждён, восстановление отменено.",
+                str(exc),
+            ]
+            if duplicate_ids:
+                lines.append(f"Duplicate ids: {', '.join(duplicate_ids)}")
+            self._reply(message, "\n".join(lines))
+            return False
+
+        if backup_bank.count() == 0:
+            self._reply(message, f"Backup #{backup_index} пустой, восстановление отменено.")
+            return False
+
+        temp_path = self._questions_upload_temp_path()
+        try:
+            current_backup = self._backup_questions_file()
+            shutil.copy2(selected_backup, temp_path)
+            temp_path.replace(self.settings.questions_path)
+            self.question_bank = load_questions(self.settings.questions_path)
+        except OSError as exc:
+            temp_path.unlink(missing_ok=True)
+            self._reply(message, f"Не удалось восстановить questions.csv: {exc}")
+            return False
+
+        bound_topics = {str(topic["topic_key"]) for topic in self.repository.list_topics()}
+        lines, warnings = build_report(self.question_bank, duplicate_ids, bound_topics)
+        prefix = [
+            f"questions.csv восстановлен из backup #{backup_index}: {selected_backup.name}.",
+        ]
+        if current_backup is not None:
+            prefix.append(f"Backup текущего файла: {self._display_questions_path(current_backup)}")
+        report = format_report_for_telegram(lines, warnings)
+        self._reply(message, "\n".join(prefix) + "\n\n" + report)
+        return True
+
+    def _list_question_backups(self, limit: int = 10) -> list[Path]:
+        backup_dir = self._questions_backup_dir()
+        if not backup_dir.exists():
+            return []
+        return sorted(
+            backup_dir.glob("questions-*.csv"),
+            key=lambda path: path.name,
+            reverse=True,
+        )[:limit]
+
+    def _questions_backup_dir(self) -> Path:
+        return self.settings.questions_path.parent / "backups"
+
+    def _display_questions_path(self, path: Path) -> str:
+        try:
+            return path.relative_to(self.settings.questions_path.parent).as_posix()
+        except ValueError:
+            return str(path)
+
+    def _topic_counts(self, polls: list[dict[str, Any]]) -> str:
+        counts: dict[str, int] = {}
+        for poll in polls:
+            topic_key = str(poll["topic_key"])
+            counts[topic_key] = counts.get(topic_key, 0) + 1
+        return ", ".join(f"{topic_key}={count}" for topic_key, count in sorted(counts.items()))
+
+    def _daily_window(self) -> tuple[str, str, str]:
+        now = datetime.now(self.settings.timezone)
+        start_local = datetime.combine(now.date(), time.min, tzinfo=self.settings.timezone)
+        end_local = start_local + timedelta(days=1)
+        return (
+            now.date().isoformat(),
+            start_local.astimezone(timezone.utc).isoformat(),
+            end_local.astimezone(timezone.utc).isoformat(),
+        )
+
+    def _format_daily_summary(self, summary_date: str, stats: dict[str, Any]) -> str:
+        lines = [
+            f"Итоги дня {summary_date}:",
+            f"Вопросы: {stats['questions_count']}",
+            (
+                f"Ответы: {stats['answers_count']} от {stats['participants_count']} участников. "
+                f"Верно/ошибки: {stats['correct_count']}/{stats['wrong_count']}."
+            ),
+            f"Очки за день: {self._signed(int(stats['points_delta']))}",
+            f"Challenge: {stats['challenge_count']} запусков, пройдено {stats['challenge_wins']}.",
+        ]
+
+        top_players = stats["top_players"]
+        lines.append("Топ дня:")
+        if top_players:
+            for index, row in enumerate(top_players, start=1):
+                lines.append(
+                    f"{index}. {self._display_name(row)} — {self._signed(int(row['points_delta']))} "
+                    f"({row['correct_count']}/{row['answers_count']} верно/ответов)"
+                )
+        else:
+            lines.append("- сегодня табло ещё пустое")
+
+        challenge_players = stats["challenge_players"]
+        if challenge_players:
+            lines.append("Challenge-сцена:")
+            for index, row in enumerate(challenge_players, start=1):
+                lines.append(
+                    f"{index}. {self._display_name(row)} — {row['challenge_count']} выз., "
+                    f"{row['challenge_wins']} пройдено, {self._signed(int(row['challenge_delta']))}"
+                )
+
+        risky_players = stats["risky_players"]
+        if risky_players:
+            lines.append("Риск x2/x3:")
+            for index, row in enumerate(risky_players, start=1):
+                lines.append(
+                    f"{index}. {self._display_name(row)} — {row['risky_answers']} ставок, "
+                    f"{self._signed(int(row['risk_delta']))}"
+                )
+
+        season_top = self.repository.leaderboard(self.settings.season_name, limit=1)
+        if season_top:
+            leader = season_top[0]
+            lines.append(f"Лидер сезона: {self._display_name(leader)} — {leader['points']}.")
+        else:
+            lines.append("Лидер сезона: пока никто не вырвался вперёд.")
+
+        return "\n".join(lines)
+
+    def _signed(self, value: int) -> str:
+        return f"+{value}" if value > 0 else str(value)
 
     def _short_dt(self, value: str) -> str:
         return value.replace("T", " ").split("+", 1)[0].split(".", 1)[0]

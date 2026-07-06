@@ -39,6 +39,7 @@ class TelegramClient:
         filename: str,
         content: bytes,
         caption: str = "",
+        mime_type: str = "application/octet-stream",
         message_thread_id: int | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {"chat_id": chat_id}
@@ -49,7 +50,7 @@ class TelegramClient:
         return self._request_multipart(
             "sendDocument",
             payload,
-            files={"document": (filename, BytesIO(content), "application/json")},
+            files={"document": (filename, BytesIO(content), mime_type)},
         )
 
     def send_poll(
@@ -97,6 +98,23 @@ class TelegramClient:
                 "message_id": message_id,
             },
         )
+
+    def download_file(self, file_id: str) -> bytes:
+        file_info = self._request("getFile", {"file_id": file_id})
+        file_path = str((file_info.get("result") or {}).get("file_path") or "")
+        if not file_path:
+            raise TelegramApiError("Telegram getFile returned no file_path")
+
+        if not self.bot_token:
+            raise TelegramApiError("TELEGRAM_BOT_TOKEN is not configured")
+
+        response = requests.get(
+            f"https://api.telegram.org/file/bot{self.bot_token}/{file_path}",
+            timeout=self.timeout_seconds,
+        )
+        if response.status_code >= 400:
+            raise TelegramApiError(f"Telegram file download failed: {response.text}")
+        return response.content
 
     def set_webhook(
         self,

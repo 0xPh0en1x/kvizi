@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import csv
 import json
+from datetime import datetime, timedelta, timezone
+from io import StringIO
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +21,7 @@ class FakeTelegram:
         self.sent_documents: list[dict[str, Any]] = []
         self.callback_answers: list[dict[str, Any]] = []
         self.stopped_polls: list[dict[str, Any]] = []
+        self.downloaded_files: dict[str, bytes] = {}
 
     def send_poll(self, **payload: Any) -> dict[str, Any]:
         self.sent_polls.append(payload)
@@ -38,6 +42,9 @@ class FakeTelegram:
     def stop_poll(self, **payload: Any) -> dict[str, Any]:
         self.stopped_polls.append(payload)
         return {"ok": True, "result": {"id": "stopped"}}
+
+    def download_file(self, file_id: str) -> bytes:
+        return self.downloaded_files[file_id]
 
 
 def make_settings(tmp_path: Path) -> Settings:
@@ -97,6 +104,19 @@ def make_service(tmp_path: Path) -> tuple[KviziService, KviziRepository, FakeTel
         question_bank=make_question_bank(),
     )
     return service, repository, telegram
+
+
+def test_database_uses_wal_and_busy_timeout(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    repository = KviziRepository(settings.database_path)
+    repository.init_db()
+
+    with repository.connect() as connection:
+        journal_mode = connection.execute("PRAGMA journal_mode").fetchone()[0]
+        busy_timeout = connection.execute("PRAGMA busy_timeout").fetchone()[0]
+
+    assert journal_mode.lower() == "wal"
+    assert busy_timeout == 5000
 
 
 def test_post_bet_answer_updates_score_and_is_idempotent(tmp_path: Path) -> None:
@@ -474,6 +494,528 @@ def test_admin_status_reports_loaded_questions_topics_active_polls_and_cron(tmp_
     assert "Последний cron: posted" in text
 
 
+def test_admin_help_lists_commands_and_cron_endpoints(tmp_path: Path) -> None:
+    service, _repository, telegram = make_service(tmp_path)
+
+    result = service.handle_update(
+        {
+            "update_id": 52,
+            "message": {
+                "message_id": 81,
+                "message_thread_id": 101,
+                "chat": {"id": "-1001"},
+                "from": {"id": 7, "first_name": "Admin"},
+                "text": "/kvizi_help_admin",
+            },
+        }
+    )
+
+    assert result["command"] == "/kvizi_help_admin"
+    text = telegram.sent_messages[-1]["text"]
+    assert "Админ-пульт Квизи:" in text
+    assert "/kvizi_status_compact" in text
+    assert "/kvizi_questions_status" in text
+    assert "/kvizi_questions_template" in text
+    assert "/kvizi_upload_questions" in text
+    assert "/kvizi_backups" in text
+    assert "/kvizi_restore_questions" in text
+    assert "POST /cron/maintenance" in text
+    assert "python scripts/local_cron.py daily" in text
+
+
+def test_admin_questions_status_reports_csv_coverage(tmp_path: Path) -> None:
+    service, _repository, telegram = make_service(tmp_path)
+    service.settings.questions_path.write_text(
+        "id,topic_key,difficulty,question,option_1,option_2,option_3,option_4,"
+        "option_5,option_6,correct_option_ids,explanation,source\n"
+        "q1,network,normal,Question?,A,B,C,D,,,1,Because,\n"
+        "q2,security,hard,Question?,A,B,C,D,,,2,Because,\n",
+        encoding="utf-8",
+    )
+
+    result = service.handle_update(
+        {
+            "update_id": 54,
+            "message": {
+                "message_id": 83,
+                "message_thread_id": 101,
+                "chat": {"id": "-1001"},
+                "from": {"id": 7, "first_name": "Admin"},
+                "text": "/kvizi_questions_status",
+            },
+        }
+    )
+
+    assert result["command"] == "/kvizi_questions_status"
+    text = telegram.sent_messages[-1]["text"]
+    assert "Статус questions.csv:" in text
+    assert "Questions OK: 2" in text
+    assert "Difficulties: hard=1, normal=1" in text
+    assert "- network: total=1 | normal=1" in text
+    assert "- security: total=1 | hard=1" in text
+    assert "CSV topics not bound in SQLite: security" in text
+
+
+def test_admin_questions_status_reports_csv_error(tmp_path: Path) -> None:
+    service, _repository, telegram = make_service(tmp_path)
+    service.settings.questions_path.write_text(
+        "id,topic_key,difficulty,question,option_1,option_2,option_3,option_4,"
+        "option_5,option_6,correct_option_ids,explanation,source\n"
+        "q1,network,not valid,Question?,A,B,C,D,,,1,Because,\n",
+        encoding="utf-8",
+    )
+
+    result = service.handle_update(
+        {
+            "update_id": 55,
+            "message": {
+                "message_id": 84,
+                "message_thread_id": 101,
+                "chat": {"id": "-1001"},
+                "from": {"id": 7, "first_name": "Admin"},
+                "text": "/kvizi_questions_status",
+            },
+        }
+    )
+
+    assert result["command"] == "/kvizi_questions_status"
+    text = telegram.sent_messages[-1]["text"]
+    assert "Статус questions.csv:" in text
+    assert "Questions ERROR:" in text
+    assert "difficulty must be a slug" in text
+
+
+def test_admin_questions_template_sends_csv_for_bound_topics(tmp_path: Path) -> None:
+    service, _repository, telegram = make_service(tmp_path)
+
+    result = service.handle_update(
+        {
+            "update_id": 62,
+            "message": {
+                "message_id": 91,
+                "message_thread_id": 101,
+                "chat": {"id": "-1001"},
+                "from": {"id": 7, "first_name": "Admin"},
+                "text": "/kvizi_questions_template",
+            },
+        }
+    )
+
+    assert result["command"] == "/kvizi_questions_template"
+    assert result["sent"] is True
+    assert len(telegram.sent_documents) == 1
+    document = telegram.sent_documents[0]
+    assert document["chat_id"] == "-1001"
+    assert document["message_thread_id"] == 101
+    assert document["filename"].startswith("questions-template-")
+    assert document["filename"].endswith(".csv")
+    assert document["mime_type"] == "text/csv"
+    assert "topics=1" in document["caption"]
+    assert "difficulties=easy, normal, hard" in document["caption"]
+
+    payload = document["content"].decode("utf-8-sig")
+    rows = list(csv.DictReader(StringIO(payload)))
+    assert [row["difficulty"] for row in rows] == ["easy", "normal", "hard"]
+    assert {row["topic_key"] for row in rows} == {"network"}
+    assert rows[0]["id"] == "network_easy_001"
+    assert rows[0]["question"] == ""
+    assert rows[0]["correct_option_ids"] == ""
+
+
+def test_admin_questions_template_accepts_custom_difficulty(tmp_path: Path) -> None:
+    service, _repository, telegram = make_service(tmp_path)
+
+    result = service.handle_update(
+        {
+            "update_id": 63,
+            "message": {
+                "message_id": 92,
+                "message_thread_id": 101,
+                "chat": {"id": "-1001"},
+                "from": {"id": 7, "first_name": "Admin"},
+                "text": "/kvizi_questions_template ccna",
+            },
+        }
+    )
+
+    assert result["sent"] is True
+    rows = list(
+        csv.DictReader(
+            StringIO(telegram.sent_documents[0]["content"].decode("utf-8-sig"))
+        )
+    )
+    assert len(rows) == 1
+    assert rows[0]["topic_key"] == "network"
+    assert rows[0]["difficulty"] == "ccna"
+    assert rows[0]["id"] == "network_ccna_001"
+
+
+def test_admin_questions_template_rejects_invalid_difficulty(tmp_path: Path) -> None:
+    service, _repository, telegram = make_service(tmp_path)
+
+    result = service.handle_update(
+        {
+            "update_id": 64,
+            "message": {
+                "message_id": 93,
+                "message_thread_id": 101,
+                "chat": {"id": "-1001"},
+                "from": {"id": 7, "first_name": "Admin"},
+                "text": "/kvizi_questions_template bad!slug",
+            },
+        }
+    )
+
+    assert result["sent"] is False
+    assert telegram.sent_documents == []
+    assert "Некорректная сложность" in telegram.sent_messages[-1]["text"]
+
+
+def test_admin_upload_questions_replaces_csv_after_validation_and_backup(tmp_path: Path) -> None:
+    service, _repository, telegram = make_service(tmp_path)
+    original_content = (
+        "id,topic_key,difficulty,question,option_1,option_2,option_3,option_4,"
+        "option_5,option_6,correct_option_ids,explanation,source\n"
+        "old,network,normal,Old question?,A,B,C,D,,,1,Because,\n"
+    )
+    uploaded_content = (
+        "id,topic_key,difficulty,question,option_1,option_2,option_3,option_4,"
+        "option_5,option_6,correct_option_ids,explanation,source\n"
+        "new1,network,easy,Question 1?,A,B,C,D,,,1,Because,\n"
+        "new2,network,normal,Question 2?,A,B,C,D,,,2,Because,\n"
+        "new3,security,hard,Question 3?,A,B,C,D,,,3,Because,\n"
+    )
+    service.settings.questions_path.write_text(original_content, encoding="utf-8")
+    telegram.downloaded_files["file-ok"] = uploaded_content.encode("utf-8")
+
+    result = service.handle_update(
+        {
+            "update_id": 56,
+            "message": {
+                "message_id": 85,
+                "message_thread_id": 101,
+                "chat": {"id": "-1001"},
+                "from": {"id": 7, "first_name": "Admin"},
+                "caption": "/kvizi_upload_questions",
+                "document": {
+                    "file_id": "file-ok",
+                    "file_name": "questions.csv",
+                    "file_size": len(uploaded_content.encode("utf-8")),
+                },
+            },
+        }
+    )
+
+    assert result["command"] == "/kvizi_upload_questions"
+    assert result["uploaded"] is True
+    assert service.question_bank.count() == 3
+    assert "new1" in service.settings.questions_path.read_text(encoding="utf-8")
+    assert "old" not in service.settings.questions_path.read_text(encoding="utf-8")
+    backups = list((tmp_path / "backups").glob("questions-*.csv"))
+    assert len(backups) == 1
+    assert backups[0].read_text(encoding="utf-8") == original_content
+
+    text = telegram.sent_messages[-1]["text"]
+    assert "questions.csv обновлён: 3 вопросов." in text
+    assert "Backup: backups/questions-" in text
+    assert "Questions OK: 3" in text
+    assert "CSV topics not bound in SQLite: security" in text
+
+
+def test_admin_upload_questions_check_validates_without_replacing_csv(tmp_path: Path) -> None:
+    service, _repository, telegram = make_service(tmp_path)
+    original_content = (
+        "id,topic_key,difficulty,question,option_1,option_2,option_3,option_4,"
+        "option_5,option_6,correct_option_ids,explanation,source\n"
+        "old,network,normal,Old question?,A,B,C,D,,,1,Because,\n"
+    )
+    uploaded_content = (
+        "id,topic_key,difficulty,question,option_1,option_2,option_3,option_4,"
+        "option_5,option_6,correct_option_ids,explanation,source\n"
+        "new1,network,easy,Question 1?,A,B,C,D,,,1,Because,\n"
+        "new2,security,hard,Question 2?,A,B,C,D,,,2,Because,\n"
+    )
+    service.settings.questions_path.write_text(original_content, encoding="utf-8")
+    before_count = service.question_bank.count()
+    telegram.downloaded_files["file-check"] = uploaded_content.encode("utf-8")
+
+    result = service.handle_update(
+        {
+            "update_id": 58,
+            "message": {
+                "message_id": 87,
+                "message_thread_id": 101,
+                "chat": {"id": "-1001"},
+                "from": {"id": 7, "first_name": "Admin"},
+                "caption": "/kvizi_upload_questions --check",
+                "document": {
+                    "file_id": "file-check",
+                    "file_name": "questions.csv",
+                    "file_size": len(uploaded_content.encode("utf-8")),
+                },
+            },
+        }
+    )
+
+    assert result["command"] == "/kvizi_upload_questions"
+    assert result["uploaded"] is True
+    assert result["check_only"] is True
+    assert service.question_bank.count() == before_count
+    assert service.settings.questions_path.read_text(encoding="utf-8") == original_content
+    assert not (tmp_path / "backups").exists()
+
+    text = telegram.sent_messages[-1]["text"]
+    assert "Проверка questions.csv пройдена: 2 вопросов." in text
+    assert "Файл не заменён. Для применения отправь без --check." in text
+    assert "Questions OK: 2" in text
+    assert "Backup:" not in text
+
+
+def test_admin_upload_questions_rejects_invalid_csv_without_replacing_current_file(tmp_path: Path) -> None:
+    service, _repository, telegram = make_service(tmp_path)
+    original_content = (
+        "id,topic_key,difficulty,question,option_1,option_2,option_3,option_4,"
+        "option_5,option_6,correct_option_ids,explanation,source\n"
+        "old,network,normal,Old question?,A,B,C,D,,,1,Because,\n"
+    )
+    uploaded_content = (
+        "id,topic_key,difficulty,question,option_1,option_2,option_3,option_4,"
+        "option_5,option_6,correct_option_ids,explanation,source\n"
+        "bad,network,not valid,Question?,A,B,C,D,,,1,Because,\n"
+    )
+    service.settings.questions_path.write_text(original_content, encoding="utf-8")
+    telegram.downloaded_files["file-bad"] = uploaded_content.encode("utf-8")
+
+    result = service.handle_update(
+        {
+            "update_id": 57,
+            "message": {
+                "message_id": 86,
+                "message_thread_id": 101,
+                "chat": {"id": "-1001"},
+                "from": {"id": 7, "first_name": "Admin"},
+                "caption": "/kvizi_upload_questions",
+                "document": {
+                    "file_id": "file-bad",
+                    "file_name": "questions.csv",
+                    "file_size": len(uploaded_content.encode("utf-8")),
+                },
+            },
+        }
+    )
+
+    assert result["command"] == "/kvizi_upload_questions"
+    assert result["uploaded"] is False
+    assert service.settings.questions_path.read_text(encoding="utf-8") == original_content
+    assert not (tmp_path / "backups").exists()
+    text = telegram.sent_messages[-1]["text"]
+    assert "Questions ERROR: новый CSV не принят." in text
+    assert "Текущий questions.csv не заменён." in text
+    assert "difficulty must be a slug" in text
+
+
+def test_admin_backups_lists_latest_question_backups(tmp_path: Path) -> None:
+    service, _repository, telegram = make_service(tmp_path)
+    backup_dir = tmp_path / "backups"
+    backup_dir.mkdir()
+    (backup_dir / "questions-20260706T010000000000Z.csv").write_text("old", encoding="utf-8")
+    (backup_dir / "questions-20260706T020000000000Z.csv").write_text("new", encoding="utf-8")
+
+    result = service.handle_update(
+        {
+            "update_id": 59,
+            "message": {
+                "message_id": 88,
+                "message_thread_id": 101,
+                "chat": {"id": "-1001"},
+                "from": {"id": 7, "first_name": "Admin"},
+                "text": "/kvizi_backups",
+            },
+        }
+    )
+
+    assert result["command"] == "/kvizi_backups"
+    text = telegram.sent_messages[-1]["text"]
+    assert "Backups questions.csv:" in text
+    assert "1. questions-20260706T020000000000Z.csv" in text
+    assert "2. questions-20260706T010000000000Z.csv" in text
+    assert "Восстановить: /kvizi_restore_questions <номер>" in text
+
+
+def test_admin_restore_questions_restores_backup_and_backs_up_current_csv(tmp_path: Path) -> None:
+    service, _repository, telegram = make_service(tmp_path)
+    current_content = (
+        "id,topic_key,difficulty,question,option_1,option_2,option_3,option_4,"
+        "option_5,option_6,correct_option_ids,explanation,source\n"
+        "current,network,normal,Current question?,A,B,C,D,,,1,Because,\n"
+    )
+    backup_content = (
+        "id,topic_key,difficulty,question,option_1,option_2,option_3,option_4,"
+        "option_5,option_6,correct_option_ids,explanation,source\n"
+        "restore1,network,easy,Restore question 1?,A,B,C,D,,,1,Because,\n"
+        "restore2,security,hard,Restore question 2?,A,B,C,D,,,2,Because,\n"
+    )
+    service.settings.questions_path.write_text(current_content, encoding="utf-8")
+    backup_dir = tmp_path / "backups"
+    backup_dir.mkdir()
+    selected_backup = backup_dir / "questions-20260706T020000000000Z.csv"
+    selected_backup.write_text(backup_content, encoding="utf-8")
+
+    result = service.handle_update(
+        {
+            "update_id": 60,
+            "message": {
+                "message_id": 89,
+                "message_thread_id": 101,
+                "chat": {"id": "-1001"},
+                "from": {"id": 7, "first_name": "Admin"},
+                "text": "/kvizi_restore_questions 1",
+            },
+        }
+    )
+
+    assert result["command"] == "/kvizi_restore_questions"
+    assert result["restored"] is True
+    assert service.question_bank.count() == 2
+    assert "restore1" in service.settings.questions_path.read_text(encoding="utf-8")
+    current_backups = [
+        path
+        for path in backup_dir.glob("questions-*.csv")
+        if path.name != selected_backup.name
+    ]
+    assert len(current_backups) == 1
+    assert current_backups[0].read_text(encoding="utf-8") == current_content
+
+    text = telegram.sent_messages[-1]["text"]
+    assert "questions.csv восстановлен из backup #1: questions-20260706T020000000000Z.csv." in text
+    assert "Backup текущего файла: backups/questions-" in text
+    assert "Questions OK: 2" in text
+
+
+def test_admin_restore_questions_rejects_invalid_backup_without_replacing_current_csv(tmp_path: Path) -> None:
+    service, _repository, telegram = make_service(tmp_path)
+    current_content = (
+        "id,topic_key,difficulty,question,option_1,option_2,option_3,option_4,"
+        "option_5,option_6,correct_option_ids,explanation,source\n"
+        "current,network,normal,Current question?,A,B,C,D,,,1,Because,\n"
+    )
+    bad_backup_content = (
+        "id,topic_key,difficulty,question,option_1,option_2,option_3,option_4,"
+        "option_5,option_6,correct_option_ids,explanation,source\n"
+        "bad,network,not valid,Bad question?,A,B,C,D,,,1,Because,\n"
+    )
+    service.settings.questions_path.write_text(current_content, encoding="utf-8")
+    backup_dir = tmp_path / "backups"
+    backup_dir.mkdir()
+    (backup_dir / "questions-20260706T020000000000Z.csv").write_text(
+        bad_backup_content,
+        encoding="utf-8",
+    )
+
+    result = service.handle_update(
+        {
+            "update_id": 61,
+            "message": {
+                "message_id": 90,
+                "message_thread_id": 101,
+                "chat": {"id": "-1001"},
+                "from": {"id": 7, "first_name": "Admin"},
+                "text": "/kvizi_restore_questions 1",
+            },
+        }
+    )
+
+    assert result["command"] == "/kvizi_restore_questions"
+    assert result["restored"] is False
+    assert service.settings.questions_path.read_text(encoding="utf-8") == current_content
+    assert len(list(backup_dir.glob("questions-*.csv"))) == 1
+    text = telegram.sent_messages[-1]["text"]
+    assert "Backup #1 повреждён, восстановление отменено." in text
+    assert "difficulty must be a slug" in text
+
+
+def test_admin_help_requires_admin(tmp_path: Path) -> None:
+    service, _repository, telegram = make_service(tmp_path)
+
+    result = service.handle_update(
+        {
+            "update_id": 53,
+            "message": {
+                "message_id": 82,
+                "message_thread_id": 101,
+                "chat": {"id": "-1001"},
+                "from": {"id": 42, "first_name": "User"},
+                "text": "/kvizi_help_admin",
+            },
+        }
+    )
+
+    assert result["command"] == "/kvizi_help_admin"
+    assert result["admin"] is False
+    assert telegram.sent_messages[-1]["text"] == "Эта ручка только для администраторов Квизи."
+
+
+def test_admin_status_compact_reports_counts_and_maintenance_hint(tmp_path: Path) -> None:
+    service, repository, telegram = make_service(tmp_path)
+    repository.create_poll(
+        poll_id="challenge-poll",
+        telegram_message_id=555,
+        question_id="q1",
+        topic_key="network",
+        message_thread_id=101,
+        correct_option_id=0,
+        difficulty="normal",
+        opened_at="2026-07-05T20:00:00+00:00",
+        closes_at="2999-01-01T00:00:00+00:00",
+        explanation="",
+        requested_by=7,
+        request_cost=10,
+        request_reward=25,
+    )
+    repository.create_poll(
+        poll_id="expired-poll",
+        telegram_message_id=556,
+        question_id="q2",
+        topic_key="network",
+        message_thread_id=101,
+        correct_option_id=0,
+        difficulty="hard",
+        opened_at="1999-01-01T00:00:00+00:00",
+        closes_at="2000-01-01T00:00:00+00:00",
+        explanation="",
+    )
+    repository.record_cron_run(
+        "2026-07-05T20:00:00+00:00",
+        "2026-07-05T20:00:01+00:00",
+        "maintenance_ok",
+        "Closed expired polls: 0",
+    )
+
+    result = service.handle_update(
+        {
+            "update_id": 51,
+            "message": {
+                "message_id": 80,
+                "message_thread_id": 101,
+                "chat": {"id": "-1001"},
+                "from": {"id": 7, "first_name": "Admin"},
+                "text": "/kvizi_status_compact",
+            },
+        }
+    )
+
+    assert result["command"] == "/kvizi_status_compact"
+    text = telegram.sent_messages[-1]["text"]
+    assert "Статус Квизи compact:" in text
+    assert "Вопросы: 2" in text
+    assert "Топики: active=1/1" in text
+    assert "Poll: active=1, expired=1, challenge=1" in text
+    assert "Занятые топики: network=1" in text
+    assert "Maintenance: есть просроченные poll" in text
+    assert "Последний cron: maintenance_ok" in text
+    assert "poll=challenge-poll" not in text
+
+
 def test_admin_export_sends_json_document(tmp_path: Path) -> None:
     service, repository, telegram = make_service(tmp_path)
     repository.upsert_user({"id": 7, "username": "adminuser", "first_name": "Admin"})
@@ -526,6 +1068,56 @@ def test_admin_export_full_includes_processed_updates(tmp_path: Path) -> None:
     assert "processed_updates" in payload
 
 
+def test_admin_daily_posts_summary_to_current_topic(tmp_path: Path) -> None:
+    service, repository, telegram = make_service(tmp_path)
+    _seed_today_answer(repository, user_id=42, username="ada", points_difficulty="normal")
+
+    result = service.handle_update(
+        {
+            "update_id": 80,
+            "message": {
+                "message_id": 81,
+                "message_thread_id": 101,
+                "chat": {"id": "-1001"},
+                "from": {"id": 7, "first_name": "Admin"},
+                "text": "/kvizi_daily",
+            },
+        }
+    )
+
+    assert result["command"] == "/kvizi_daily"
+    assert result["posted"] is True
+    message = telegram.sent_messages[-1]
+    assert message["message_thread_id"] == 101
+    assert "Итоги дня" in message["text"]
+    assert "Вопросы: 1" in message["text"]
+    assert "Ответы: 1 от 1 участников" in message["text"]
+    assert "@ada" in message["text"]
+
+
+def test_cron_daily_posts_once_and_skips_duplicate(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    repository = KviziRepository(settings.database_path)
+    repository.init_db()
+    repository.bind_topic("network", 101, 1)
+    repository.set_bot_setting("announce_thread_id", "999")
+    _seed_today_answer(repository, user_id=42, username="ada", points_difficulty="normal")
+    telegram = FakeTelegram()
+    app = create_app(settings=settings, repository=repository, telegram=telegram)  # type: ignore[arg-type]
+    client = app.test_client()
+
+    first = client.post("/cron/daily", headers={"X-Kvizi-Cron-Secret": "cron-secret"})
+    second = client.post("/cron/daily", headers={"X-Kvizi-Cron-Secret": "cron-secret"})
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.get_json()["posted"] is True
+    assert second.get_json()["posted"] is False
+    assert len(telegram.sent_messages) == 1
+    assert telegram.sent_messages[0]["message_thread_id"] == 999
+    assert "Итоги дня" in telegram.sent_messages[0]["text"]
+
+
 def test_flask_cron_requires_secret_and_posts_question(tmp_path: Path) -> None:
     settings = make_settings(tmp_path)
     settings.questions_path.write_text(
@@ -575,6 +1167,39 @@ def test_flask_cron_skips_when_topic_has_active_poll(tmp_path: Path) -> None:
     assert len(telegram.sent_polls) == 1
 
 
+def test_cron_maintenance_requires_secret_and_closes_expired_poll(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    repository = KviziRepository(settings.database_path)
+    repository.init_db()
+    repository.bind_topic("network", 101, 1)
+    telegram = FakeTelegram()
+    app = create_app(settings=settings, repository=repository, telegram=telegram)  # type: ignore[arg-type]
+    repository.create_poll(
+        poll_id="expired-poll",
+        telegram_message_id=321,
+        question_id="q1",
+        topic_key="network",
+        message_thread_id=101,
+        correct_option_id=0,
+        difficulty="normal",
+        opened_at="1999-01-01T00:00:00+00:00",
+        closes_at="2000-01-01T00:00:00+00:00",
+        explanation="",
+    )
+
+    client = app.test_client()
+    forbidden = client.post("/cron/maintenance")
+    ok = client.post("/cron/maintenance", headers={"X-Kvizi-Cron-Secret": "cron-secret"})
+
+    assert forbidden.status_code == 403
+    assert ok.status_code == 200
+    assert ok.get_json()["closed"] == 1
+    assert telegram.sent_polls == []
+    assert telegram.stopped_polls == [{"chat_id": "-1001", "message_id": 321}]
+    assert repository.get_poll("expired-poll")["status"] == "closed"
+    assert repository.latest_cron_run()["status"] == "maintenance_closed"
+
+
 def _seed_poll(repository: KviziRepository, difficulty: str = "normal") -> str:
     repository.create_poll(
         poll_id="seed-poll",
@@ -589,3 +1214,34 @@ def _seed_poll(repository: KviziRepository, difficulty: str = "normal") -> str:
         explanation="",
     )
     return "seed-poll"
+
+
+def _seed_today_answer(
+    repository: KviziRepository,
+    *,
+    user_id: int,
+    username: str,
+    points_difficulty: str,
+) -> str:
+    now = datetime.now(timezone.utc)
+    poll_id = f"today-{user_id}-{points_difficulty}"
+    repository.create_poll(
+        poll_id=poll_id,
+        telegram_message_id=1000 + user_id,
+        question_id=f"question-{poll_id}",
+        topic_key="network",
+        message_thread_id=101,
+        correct_option_id=0,
+        difficulty=points_difficulty,
+        opened_at=now.isoformat(),
+        closes_at=(now + timedelta(hours=1)).isoformat(),
+        explanation="",
+    )
+    repository.record_answer(
+        season="main",
+        poll_id=poll_id,
+        user={"id": user_id, "username": username, "first_name": username},
+        option_ids=[0],
+        now_iso=now.isoformat(),
+    )
+    return poll_id

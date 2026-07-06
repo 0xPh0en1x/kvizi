@@ -15,6 +15,24 @@ python scripts/init_db.py
 flask --app app run
 ```
 
+Локально cron-ручки можно дергать без HTTP-клиента:
+
+```powershell
+python scripts/local_cron.py tick
+python scripts/local_cron.py maintenance
+python scripts/local_cron.py daily
+```
+
+Перед деплоем можно прогнать smoke-check:
+
+```powershell
+python scripts/smoke_check.py
+```
+
+Подробный чеклист деплоя: `DEPLOY.md`.
+
+Предрелизный список возможностей: `RELEASE_NOTES.md`.
+
 Минимальные переменные окружения для реального запуска:
 
 ```powershell
@@ -51,6 +69,59 @@ id,topic_key,difficulty,question,option_1,option_2,option_3,option_4,option_5,op
 Для обычных очков известны базы `easy=5`, `normal=10`, `hard=15`; неизвестные
 slug пока считаются как `normal`.
 
+`python scripts/validate_questions.py` проверяет CSV и печатает покрытие:
+статистику по `topic_key`, `topic_key + difficulty`, duplicate id, темы из CSV
+без привязки в SQLite и привязанные топики без вопросов. Нехватка вопросов или
+сложностей выводится как warning и не ломает запуск.
+
+### Загрузка вопросов через Telegram
+
+Админ может заменить `questions.csv` прямо из Telegram:
+
+1. Прикрепить новый CSV как документ.
+2. В caption документа написать:
+
+```text
+/kvizi_upload_questions
+```
+
+Для dry-run проверки без замены файла:
+
+```text
+/kvizi_upload_questions --check
+```
+
+Бот скачает файл, проверит CSV, создаст backup текущего файла в `backups/`,
+заменит `questions.csv`, перечитает вопросы и отправит отчёт как
+`/kvizi_questions_status`. Если CSV сломан или пустой, текущий файл не
+заменяется. В режиме `--check` backup не создаётся, файл не заменяется и банк
+вопросов не перечитывается.
+
+Посмотреть последние backup:
+
+```text
+/kvizi_backups
+```
+
+Восстановить backup по номеру из списка:
+
+```text
+/kvizi_restore_questions 1
+```
+
+Перед восстановлением backup валидируется, а текущий `questions.csv` сохраняется
+новым backup-файлом.
+
+Получить CSV-шаблон для заполнения:
+
+```text
+/kvizi_questions_template
+/kvizi_questions_template ccna
+```
+
+Если есть привязанные топики, шаблон строится по ним. Если привязок нет, берутся
+topic из текущего CSV.
+
 ## Telegram команды
 
 Пользовательские:
@@ -62,10 +133,18 @@ slug пока считаются как `normal`.
 
 Админские:
 
+- `/kvizi_help_admin` — короткая справка по админ-командам и cron-ручкам
 - `/kvizi_bind <topic_key> <weight>` — выполнить внутри нужного топика
 - `/kvizi_status` — показать вопросы, топики, активные poll/challenge и последний cron
+- `/kvizi_status_compact` — короткий статус со счётчиками active/expired/challenge
+- `/kvizi_questions_status` — показать покрытие `questions.csv` по темам и сложностям
+- `/kvizi_questions_template [difficulty]` — отправить CSV-шаблон для новых вопросов
 - `/kvizi_close_here` — закрыть все активные вопросы в текущем топике
 - `/kvizi_export` — отправить JSON-экспорт состояния файлом в текущий топик
+- `/kvizi_daily` — вручную отправить итоги дня в текущий топик
+- `/kvizi_upload_questions [--check]` — проверить или заменить `questions.csv` прикреплённым CSV-документом
+- `/kvizi_backups` — показать последние backup-файлы `questions.csv`
+- `/kvizi_restore_questions <n>` — восстановить `questions.csv` из backup по номеру
 - `/kvizi_topics` — список привязанных топиков
 - `/kvizi_reload` — перечитать CSV
 - `/kvizi_postnow [topic_key]` — сразу отправить вопрос
@@ -158,6 +237,42 @@ X-Kvizi-Cron-Secret: <KVIZI_CRON_SECRET>
 Если в подходящем топике уже есть активный вопрос, cron-запуск не отправляет
 туда новый poll. Если все подходящие топики заняты, `/cron/tick` возвращает
 `posted=false`.
+
+Для обслуживания истёкших poll создать отдельный частый POST job:
+
+```text
+https://YOUR_USERNAME.pythonanywhere.com/cron/maintenance
+```
+
+Header тот же:
+
+```text
+X-Kvizi-Cron-Secret: <KVIZI_CRON_SECRET>
+```
+
+Рекомендуемая частота: раз в 10-15 минут. `/cron/maintenance` не публикует
+новые вопросы и не отправляет итоги дня; он только закрывает истёкшие poll,
+фиксирует просроченные challenge и пишет результат в `cron_runs`.
+
+Для автоматических итогов дня создать отдельный POST job, например вечером по
+`Europe/Moscow`:
+
+```text
+https://YOUR_USERNAME.pythonanywhere.com/cron/daily
+```
+
+Header тот же:
+
+```text
+X-Kvizi-Cron-Secret: <KVIZI_CRON_SECRET>
+```
+
+`/cron/daily` идемпотентен по локальной дате: если итоги за день уже отправлены,
+повторный вызов вернёт `posted=false` и не продублирует сообщение.
+
+SQLite при `init_db` переводится в WAL-режим, а каждое соединение получает
+`busy_timeout=5000`, чтобы webhook и cron реже конфликтовали при одновременных
+записях.
 
 ## Счет
 

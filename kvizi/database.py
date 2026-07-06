@@ -9,6 +9,8 @@ from typing import Any, Iterator
 
 from kvizi.scoring import ScoreInput, ScoreResult, calculate_score
 
+SQLITE_BUSY_TIMEOUT_MS = 5000
+
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -40,8 +42,12 @@ class KviziRepository:
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(self.database_path)
+        connection = sqlite3.connect(
+            self.database_path,
+            timeout=SQLITE_BUSY_TIMEOUT_MS / 1000,
+        )
         connection.row_factory = sqlite3.Row
+        connection.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
         connection.execute("PRAGMA foreign_keys = ON")
         try:
             yield connection
@@ -54,6 +60,7 @@ class KviziRepository:
 
     def init_db(self) -> None:
         with self.connect() as connection:
+            connection.execute("PRAGMA journal_mode = WAL")
             connection.executescript(SCHEMA_SQL)
             self._migrate_poll_columns(connection)
 
@@ -373,6 +380,113 @@ class KviziRepository:
                 (season, limit),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def daily_summary(self, start_iso: str, end_iso: str, limit: int = 3) -> dict[str, Any]:
+        with self.connect() as connection:
+            totals = dict(
+                connection.execute(
+                    """
+                    SELECT
+                        (SELECT COUNT(*) FROM polls WHERE opened_at >= ? AND opened_at < ?) AS questions_count,
+                        COUNT(a.poll_id) AS answers_count,
+                        COUNT(DISTINCT a.user_id) AS participants_count,
+                        COALESCE(SUM(CASE WHEN a.is_correct = 1 THEN 1 ELSE 0 END), 0) AS correct_count,
+                        COALESCE(SUM(CASE WHEN a.is_correct = 0 THEN 1 ELSE 0 END), 0) AS wrong_count,
+                        COALESCE(SUM(a.points_delta), 0) AS points_delta
+                    FROM answers AS a
+                    WHERE a.answered_at >= ? AND a.answered_at < ?
+                    """,
+                    (start_iso, end_iso, start_iso, end_iso),
+                ).fetchone()
+            )
+            challenge_totals = dict(
+                connection.execute(
+                    """
+                    SELECT
+                        COUNT(*) AS challenge_count,
+                        COALESCE(SUM(CASE WHEN a.is_correct = 1 THEN 1 ELSE 0 END), 0) AS challenge_wins
+                    FROM polls AS p
+                    LEFT JOIN answers AS a
+                      ON a.poll_id = p.poll_id
+                     AND a.user_id = p.requested_by
+                    WHERE p.opened_at >= ?
+                      AND p.opened_at < ?
+                      AND p.request_cost > 0
+                    """,
+                    (start_iso, end_iso),
+                ).fetchone()
+            )
+            top_players = connection.execute(
+                """
+                SELECT
+                    a.user_id,
+                    u.username,
+                    u.first_name,
+                    u.last_name,
+                    COALESCE(SUM(a.points_delta), 0) AS points_delta,
+                    COALESCE(SUM(CASE WHEN a.is_correct = 1 THEN 1 ELSE 0 END), 0) AS correct_count,
+                    COUNT(*) AS answers_count
+                FROM answers AS a
+                LEFT JOIN users AS u ON u.user_id = a.user_id
+                WHERE a.answered_at >= ? AND a.answered_at < ?
+                GROUP BY a.user_id
+                ORDER BY points_delta DESC, correct_count DESC, answers_count DESC, a.user_id ASC
+                LIMIT ?
+                """,
+                (start_iso, end_iso, limit),
+            ).fetchall()
+            risky_players = connection.execute(
+                """
+                SELECT
+                    a.user_id,
+                    u.username,
+                    u.first_name,
+                    u.last_name,
+                    COUNT(*) AS risky_answers,
+                    COALESCE(SUM(a.points_delta), 0) AS risk_delta
+                FROM answers AS a
+                LEFT JOIN users AS u ON u.user_id = a.user_id
+                WHERE a.answered_at >= ?
+                  AND a.answered_at < ?
+                  AND a.stake > 1
+                GROUP BY a.user_id
+                ORDER BY risky_answers DESC, risk_delta DESC, a.user_id ASC
+                LIMIT ?
+                """,
+                (start_iso, end_iso, limit),
+            ).fetchall()
+            challenge_players = connection.execute(
+                """
+                SELECT
+                    p.requested_by AS user_id,
+                    u.username,
+                    u.first_name,
+                    u.last_name,
+                    COUNT(*) AS challenge_count,
+                    COALESCE(SUM(CASE WHEN a.is_correct = 1 THEN 1 ELSE 0 END), 0) AS challenge_wins,
+                    COALESCE(SUM(a.points_delta), 0) AS challenge_delta
+                FROM polls AS p
+                LEFT JOIN answers AS a
+                  ON a.poll_id = p.poll_id
+                 AND a.user_id = p.requested_by
+                LEFT JOIN users AS u ON u.user_id = p.requested_by
+                WHERE p.opened_at >= ?
+                  AND p.opened_at < ?
+                  AND p.request_cost > 0
+                GROUP BY p.requested_by
+                ORDER BY challenge_count DESC, challenge_wins DESC, challenge_delta DESC, p.requested_by ASC
+                LIMIT ?
+                """,
+                (start_iso, end_iso, limit),
+            ).fetchall()
+
+        return {
+            **totals,
+            **challenge_totals,
+            "top_players": [dict(row) for row in top_players],
+            "risky_players": [dict(row) for row in risky_players],
+            "challenge_players": [dict(row) for row in challenge_players],
+        }
 
     def has_active_challenge(self, user_id: int, now_iso: str) -> bool:
         with self.connect() as connection:
