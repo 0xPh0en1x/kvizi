@@ -435,13 +435,18 @@ def test_admin_prod_check_reports_ready_state(tmp_path: Path) -> None:
     service, repository, telegram = make_service(tmp_path)
     repository.set_bot_setting("announce_thread_id", "999")
     now = datetime.now(timezone.utc)
-    for index, status in enumerate(
-        ("posted", "maintenance_ok", "daily_posted", "backup_sent"),
+    for index, (status, message) in enumerate(
+        (
+            ("posted", "О, hardware! Какое совпадение: вопрос как раз искал сектор с хорошей акустикой."),
+            ("maintenance_ok", "Closed expired polls: 0"),
+            ("daily_posted", "Итоги дня 2026-07-06: Вопросы: 4 Ответы: 3 от 1 участников."),
+            ("backup_sent", "Backup kvizi-backup-20260706T200054Z.json: sent=1/1, failed=0"),
+        ),
         start=1,
     ):
         started_at = (now - timedelta(minutes=index + 1)).isoformat()
         finished_at = (now - timedelta(minutes=index)).isoformat()
-        repository.record_cron_run(started_at, finished_at, status, "ok")
+        repository.record_cron_run(started_at, finished_at, status, message)
 
     result = service.handle_update(
         {
@@ -467,6 +472,9 @@ def test_admin_prod_check_reports_ready_state(tmp_path: Path) -> None:
     assert "[OK] cron/maintenance: maintenance_ok" in text
     assert "[OK] cron/daily: daily_posted" in text
     assert "[OK] cron/backup: backup_sent" in text
+    assert "Какое совпадение" not in text
+    assert "Closed expired polls" not in text
+    assert "Backup kvizi-backup" not in text
     assert "WARN" not in text
     assert "FAIL" not in text
 

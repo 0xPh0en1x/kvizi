@@ -30,6 +30,7 @@
 - Admin voice smoke command `/kvizi_voice_preview` for checking current Kvizi copy without posting polls or changing scores.
 - Public `/kvizi_help`, grouped `/kvizi_help_admin`, and `/kvizi_prod_check` for quick production readiness checks.
 - Compact `/kvizi_errors` output and transient Telegram/proxy classification so temporary 503/proxy failures do not turn prod-check into WARN.
+- Compact `/kvizi_prod_check` cron lines by hiding stored cron messages from the readiness summary.
 
 ### Question operations
 

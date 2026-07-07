@@ -1070,11 +1070,7 @@ class KviziService:
             level = "OK"
 
         age = self._age_text(dt, now) if dt is not None else "возраст неизвестен"
-        message = str(run.get("message") or "").replace("\n", " ").strip()
-        if len(message) > 80:
-            message = message[:77] + "..."
-        suffix = f"; {message}" if message else ""
-        return level, f"{label}: {status} в {self._short_dt(finished_at)} ({age}){suffix}"
+        return level, f"{label}: {status} в {self._short_dt(finished_at)} ({age})"
 
     def _parse_utc_dt(self, value: str) -> datetime | None:
         try:
