@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, Sequence
 
 from kvizi.scoring import ScoreInput, ScoreResult, calculate_score
 
@@ -890,6 +890,23 @@ class KviziRepository:
         with self.connect() as connection:
             row = connection.execute(
                 "SELECT * FROM cron_runs ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        return _row_to_dict(row)
+
+    def latest_cron_run_for_statuses(self, statuses: Sequence[str]) -> dict[str, Any] | None:
+        if not statuses:
+            return None
+        placeholders = ", ".join("?" for _ in statuses)
+        with self.connect() as connection:
+            row = connection.execute(
+                f"""
+                SELECT *
+                FROM cron_runs
+                WHERE status IN ({placeholders})
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                tuple(statuses),
             ).fetchone()
         return _row_to_dict(row)
 

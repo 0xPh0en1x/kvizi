@@ -22,6 +22,7 @@ from kvizi.scoring import base_points, challenge_cost, challenge_reward
 from kvizi.telegram import TelegramApiError, TelegramClient
 
 MAX_QUESTIONS_UPLOAD_BYTES = 2_000_000
+PROD_CHECK_RECENT_HOURS = 36
 
 
 @dataclass(frozen=True)
@@ -428,6 +429,9 @@ class KviziService:
                 ),
             )
             return {"ok": True, "command": command}
+        if command == "/kvizi_help":
+            self._reply(message, copy.USER_HELP_TEXT)
+            return {"ok": True, "command": command}
         if command == "/kvizi_challenge":
             return self._handle_challenge_command(args, message, thread_id, user)
 
@@ -534,6 +538,10 @@ class KviziService:
 
         if command == "/kvizi_voice_preview":
             self._reply(message, copy.voice_preview_text(self.rng.choice))
+            return {"ok": True, "command": command}
+
+        if command == "/kvizi_prod_check":
+            self._reply(message, self._format_prod_check())
             return {"ok": True, "command": command}
 
         if command == "/kvizi_recent":
@@ -913,6 +921,162 @@ class KviziService:
             )
 
         return "\n".join(lines)
+
+    def _format_prod_check(self) -> str:
+        now = datetime.now(timezone.utc)
+        now_iso = now.isoformat()
+        checks: list[tuple[str, str]] = []
+
+        def add(level: str, text: str) -> None:
+            checks.append((level, text))
+
+        question_count = self.question_bank.count()
+        csv_topics = self.question_bank.topics()
+        topics = self.repository.list_topics()
+        active_topics = [
+            topic for topic in topics if int(topic["active"]) and int(topic["weight"]) > 0
+        ]
+        active_topic_keys = {str(topic["topic_key"]) for topic in active_topics}
+        duplicate_ids = find_duplicate_ids(self.settings.questions_path)
+
+        if question_count <= 0:
+            add("FAIL", "questions.csv: вопросов нет")
+        elif duplicate_ids:
+            add("FAIL", f"questions.csv: {question_count} вопросов, duplicate ids: {', '.join(duplicate_ids[:5])}")
+        else:
+            add("OK", f"questions.csv: {question_count} вопросов, duplicate ids: none")
+
+        if not active_topics:
+            add("FAIL", "топики: нет активных привязанных топиков")
+        else:
+            add("OK", f"топики: active={len(active_topics)}/{len(topics)}")
+
+        missing_bindings = sorted(csv_topics - active_topic_keys)
+        if missing_bindings:
+            add("WARN", f"CSV-топики без активной привязки: {', '.join(missing_bindings)}")
+        elif csv_topics:
+            add("OK", "CSV-топики привязаны")
+
+        bound_without_questions = sorted(active_topic_keys - csv_topics)
+        if bound_without_questions:
+            add("WARN", f"привязки без вопросов в CSV: {', '.join(bound_without_questions)}")
+
+        announce_thread_id = self._announce_thread_id()
+        if announce_thread_id is None:
+            add("WARN", "анонс-топик не задан: выполни /kvizi_announce_here")
+        else:
+            add("OK", f"анонс-топик: {announce_thread_id}")
+
+        expired_polls = self.repository.expired_active_polls(now_iso)
+        active_polls = self.repository.active_polls(now_iso)
+        if expired_polls:
+            add("FAIL", f"просроченные poll: {len(expired_polls)}; дерни /cron/maintenance")
+        else:
+            add("OK", "просроченных poll нет")
+        if active_polls:
+            next_poll = active_polls[0]
+            add(
+                "OK",
+                "активные poll: "
+                f"{len(active_polls)}, ближайшее закрытие {next_poll['topic_key']} "
+                f"{self._short_dt(next_poll['closes_at'])}",
+            )
+        else:
+            add("OK", "активные poll: нет")
+
+        cron_checks = (
+            ("cron/tick", ("posted", "skipped", "failed")),
+            (
+                "cron/maintenance",
+                ("maintenance_ok", "maintenance_closed", "maintenance_failed"),
+            ),
+            ("cron/daily", ("daily_posted", "daily_skipped", "daily_failed")),
+            (
+                "cron/backup",
+                ("backup_sent", "backup_skipped", "backup_partial", "backup_failed"),
+            ),
+        )
+        for label, statuses in cron_checks:
+            add(*self._prod_cron_check(label, statuses, now))
+
+        recent_failed = [
+            run
+            for run in self.repository.recent_failed_cron_runs(limit=3)
+            if self._is_recent_iso(str(run["finished_at"]), now, PROD_CHECK_RECENT_HOURS)
+        ]
+        recent_errors = [
+            event
+            for event in self.repository.recent_error_events(limit=3)
+            if self._is_recent_iso(str(event["created_at"]), now, PROD_CHECK_RECENT_HOURS)
+        ]
+        if recent_failed:
+            add("WARN", f"свежие failed cron: {len(recent_failed)}; смотри /kvizi_errors")
+        if recent_errors:
+            add("WARN", f"свежие error events: {len(recent_errors)}; смотри /kvizi_errors")
+        if not recent_failed and not recent_errors:
+            add("OK", "свежих ошибок в журнале нет")
+
+        severity = "OK"
+        if any(level == "FAIL" for level, _text in checks):
+            severity = "FAIL"
+        elif any(level == "WARN" for level, _text in checks):
+            severity = "WARN"
+
+        lines = [f"Prod-check Квизи: {severity}"]
+        lines.extend(f"[{level}] {text}" for level, text in checks)
+        return "\n".join(lines)
+
+    def _prod_cron_check(
+        self,
+        label: str,
+        statuses: tuple[str, ...],
+        now: datetime,
+    ) -> tuple[str, str]:
+        run = self.repository.latest_cron_run_for_statuses(statuses)
+        if run is None:
+            return "WARN", f"{label}: запусков нет"
+
+        status = str(run["status"])
+        finished_at = str(run["finished_at"])
+        dt = self._parse_utc_dt(finished_at)
+        stale = dt is None or now - dt > timedelta(hours=PROD_CHECK_RECENT_HOURS)
+        if "failed" in status:
+            level = "FAIL"
+        elif status in {"backup_partial", "backup_skipped"} or stale:
+            level = "WARN"
+        else:
+            level = "OK"
+
+        age = self._age_text(dt, now) if dt is not None else "возраст неизвестен"
+        message = str(run.get("message") or "").replace("\n", " ").strip()
+        if len(message) > 80:
+            message = message[:77] + "..."
+        suffix = f"; {message}" if message else ""
+        return level, f"{label}: {status} в {self._short_dt(finished_at)} ({age}){suffix}"
+
+    def _parse_utc_dt(self, value: str) -> datetime | None:
+        try:
+            dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+
+    def _is_recent_iso(self, value: str, now: datetime, hours: int) -> bool:
+        dt = self._parse_utc_dt(value)
+        return dt is not None and now - dt <= timedelta(hours=hours)
+
+    def _age_text(self, dt: datetime, now: datetime) -> str:
+        seconds = max(0, int((now - dt).total_seconds()))
+        days, remainder = divmod(seconds, 86400)
+        hours, remainder = divmod(remainder, 3600)
+        minutes = remainder // 60
+        if days:
+            return f"{days}д {hours}ч назад"
+        if hours:
+            return f"{hours}ч {minutes}м назад"
+        return f"{minutes}м назад"
 
     def _format_recent(self) -> str:
         polls = self.repository.recent_poll_summaries(limit=10)

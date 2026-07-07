@@ -330,6 +330,31 @@ def test_rules_command_uses_configured_scoring_rules(tmp_path: Path) -> None:
     assert "Вызовы: easy 5->10, normal 10->25, hard 15->40, ccna 20->55." in text
 
 
+def test_public_kvizi_help_is_available_to_non_admins(tmp_path: Path) -> None:
+    service, _repository, telegram = make_service(tmp_path)
+
+    result = service.handle_update(
+        {
+            "update_id": 95,
+            "message": {
+                "message_id": 83,
+                "message_thread_id": 101,
+                "chat": {"id": "-1001"},
+                "from": {"id": 42, "first_name": "Ada"},
+                "text": "/kvizi_help",
+            },
+        }
+    )
+
+    assert result["command"] == "/kvizi_help"
+    text = telegram.sent_messages[-1]["text"]
+    assert "Квизи-справка для участников:" in text
+    assert "/me" in text
+    assert "/top <topic_key>" in text
+    assert "/kvizi_challenge <difficulty>" in text
+    assert "только для администраторов" not in text
+
+
 def test_admin_config_command_shows_configured_scoring_rules(tmp_path: Path) -> None:
     settings = replace(
         make_settings(tmp_path),
@@ -404,6 +429,46 @@ def test_admin_voice_preview_shows_current_copy_without_side_effects(tmp_path: P
     assert "network" in text
     assert "https://t.me/c/123456789/42" in text
     assert "@guest" in text
+
+
+def test_admin_prod_check_reports_ready_state(tmp_path: Path) -> None:
+    service, repository, telegram = make_service(tmp_path)
+    repository.set_bot_setting("announce_thread_id", "999")
+    now = datetime.now(timezone.utc)
+    for index, status in enumerate(
+        ("posted", "maintenance_ok", "daily_posted", "backup_sent"),
+        start=1,
+    ):
+        started_at = (now - timedelta(minutes=index + 1)).isoformat()
+        finished_at = (now - timedelta(minutes=index)).isoformat()
+        repository.record_cron_run(started_at, finished_at, status, "ok")
+
+    result = service.handle_update(
+        {
+            "update_id": 96,
+            "message": {
+                "message_id": 84,
+                "message_thread_id": 101,
+                "chat": {"id": "-1001"},
+                "from": {"id": 7, "first_name": "Admin"},
+                "text": "/kvizi_prod_check",
+            },
+        }
+    )
+
+    assert result["command"] == "/kvizi_prod_check"
+    text = telegram.sent_messages[-1]["text"]
+    assert "Prod-check Квизи: OK" in text
+    assert "[OK] questions.csv: 2 вопросов, duplicate ids: none" in text
+    assert "[OK] CSV-топики привязаны" in text
+    assert "[OK] анонс-топик: 999" in text
+    assert "[OK] просроченных poll нет" in text
+    assert "[OK] cron/tick: posted" in text
+    assert "[OK] cron/maintenance: maintenance_ok" in text
+    assert "[OK] cron/daily: daily_posted" in text
+    assert "[OK] cron/backup: backup_sent" in text
+    assert "WARN" not in text
+    assert "FAIL" not in text
 
 
 def test_post_question_sends_announcement_with_private_group_link(tmp_path: Path) -> None:
@@ -1079,6 +1144,12 @@ def test_admin_help_lists_commands_and_cron_endpoints(tmp_path: Path) -> None:
     assert result["command"] == "/kvizi_help_admin"
     text = telegram.sent_messages[-1]["text"]
     assert "Админ-пульт Квизи:" in text
+    assert "Игра:" in text
+    assert "Топики и настройки:" in text
+    assert "Контент:" in text
+    assert "Диагностика:" in text
+    assert "/kvizi_help" in text
+    assert "/kvizi_prod_check" in text
     assert "/kvizi_status_compact" in text
     assert "/kvizi_recent" in text
     assert "/kvizi_errors" in text
