@@ -216,6 +216,46 @@ def test_post_bet_answer_updates_score_and_is_idempotent(tmp_path: Path) -> None
     assert answer["season"] == "main"
 
 
+def test_poll_answer_announces_new_season_leader_to_announce_topic(tmp_path: Path) -> None:
+    service, repository, telegram = make_service(tmp_path)
+    repository.set_bot_setting("announce_thread_id", "999")
+    _seed_topic_answer(
+        repository,
+        poll_id="old-leader",
+        topic_key="network",
+        user_id=42,
+        username="ada",
+        difficulty="normal",
+    )
+    assert repository.leaderboard("main", limit=1)[0]["user_id"] == 42
+
+    posted = service.post_question(difficulty="hard")
+    assert posted.posted is True
+    before_messages = len(telegram.sent_messages)
+
+    answer_result = service.handle_update(
+        {
+            "update_id": 4,
+            "poll_answer": {
+                "poll_id": str(posted.poll_id),
+                "user": {"id": 7, "first_name": "Neo"},
+                "option_ids": [0],
+            },
+        }
+    )
+
+    assert answer_result["recorded"] is True
+    assert answer_result["points"] == 15
+    assert repository.leaderboard("main", limit=1)[0]["user_id"] == 7
+    assert len(telegram.sent_messages) == before_messages + 1
+    announcement = telegram.sent_messages[-1]
+    assert announcement["message_thread_id"] == 999
+    assert announcement["disable_notification"] is True
+    assert "Neo" in announcement["text"]
+    assert "@ada" in announcement["text"]
+    assert "15" in announcement["text"]
+
+
 def test_top_command_can_filter_by_topic(tmp_path: Path) -> None:
     service, repository, telegram = make_service(tmp_path)
     _seed_topic_answer(

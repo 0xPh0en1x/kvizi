@@ -337,6 +337,7 @@ class KviziService:
         user = poll_answer.get("user") or {}
         poll_id = str(poll_answer.get("poll_id") or "")
         option_ids = [int(item) for item in poll_answer.get("option_ids", [])]
+        previous_leader = self._current_season_leader()
         result = self.repository.record_answer(
             season=self.settings.season_name,
             poll_id=poll_id,
@@ -355,6 +356,9 @@ class KviziService:
                     text=self._score_event_text(user, result),
                     disable_notification=True,
                 )
+
+        if result.recorded:
+            self._announce_season_leader_change(previous_leader)
 
         return {
             "ok": True,
@@ -1736,3 +1740,42 @@ class KviziService:
             streak_bonus=int(result.streak_bonus),
             chooser=self.rng.choice,
         )
+
+    def _current_season_leader(self) -> dict[str, Any] | None:
+        rows = self.repository.leaderboard(self.settings.season_name, limit=1)
+        return rows[0] if rows else None
+
+    def _announce_season_leader_change(self, previous_leader: dict[str, Any] | None) -> None:
+        if previous_leader is None:
+            return
+
+        current_leader = self._current_season_leader()
+        if current_leader is None:
+            return
+        if int(current_leader["user_id"]) == int(previous_leader["user_id"]):
+            return
+        if int(current_leader["points"]) <= 0:
+            return
+
+        announce_thread_id = self._announce_thread_id()
+        if announce_thread_id is None:
+            return
+
+        try:
+            self.telegram.send_message(
+                chat_id=self.settings.telegram_chat_id,
+                message_thread_id=announce_thread_id,
+                text=copy.season_leader_change(
+                    new_name=self._display_name(current_leader),
+                    old_name=self._display_name(previous_leader),
+                    points=int(current_leader["points"]),
+                    chooser=self.rng.choice,
+                ),
+                disable_notification=True,
+            )
+        except TelegramApiError as exc:
+            self.repository.record_error_event(
+                source="telegram",
+                event="leader_announcement_failed",
+                message=str(exc),
+            )

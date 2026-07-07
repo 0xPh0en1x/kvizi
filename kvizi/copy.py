@@ -300,6 +300,14 @@ NO_SEASON_LEADER_TEMPLATES = (
     "Лидер сезона пока не обнаружен. Табло смотрит на всех с одинаковым подозрением.",
 )
 
+SEASON_LEADER_CHANGE_TEMPLATES = (
+    "Та-даа! Табло сезона передумало: {new_name} выходит на первое место с {points}. {old_name}, просьба не спорить с прожектором.",
+    "Смена лидера! {new_name} теперь наверху: {points}. {old_name} аккуратно сдвинут системой. Система улыбается.",
+    "Click-click! Корона сезона переехала к {new_name}: {points}. {old_name}, это не падение, это декоративная перестановка.",
+    "Квизи фиксирует новый верхний пиксель: {new_name} — {points}. Прошлый лидер {old_name} временно отправлен в режим драматичной паузы.",
+    "Внимание, табло щёлкнуло слишком довольно: {new_name} стал лидером сезона с {points}. {old_name}, держим лицо. Оно полезно.",
+)
+
 
 def poll_title(question: str, chooser: Callable[[Sequence[str]], str] | None = None) -> str:
     return _render(POLL_TITLE_TEMPLATES, chooser, question=question)
@@ -399,6 +407,21 @@ def season_leader_line(
 
 def no_season_leader_line(chooser: Callable[[Sequence[str]], str] | None = None) -> str:
     return _choose(NO_SEASON_LEADER_TEMPLATES, chooser)
+
+
+def season_leader_change(
+    new_name: str,
+    old_name: str,
+    points: int,
+    chooser: Callable[[Sequence[str]], str] | None = None,
+) -> str:
+    return _render(
+        SEASON_LEADER_CHANGE_TEMPLATES,
+        chooser,
+        new_name=new_name,
+        old_name=old_name,
+        points=points,
+    )
 
 
 def no_questions_text(chooser: Callable[[Sequence[str]], str] | None = None) -> str:
