@@ -241,6 +241,22 @@ SCORE_WRONG_TEMPLATES = (
     "{name}: аппарат сказал «интересная теория» и снял очки. {delta}. Всего {points}. Сервис улыбается.",
 )
 
+RISK_FAILURE_X2_TEMPLATES = (
+    "x{stake} щёлкнул и забрал базу. {name}, смелость засчитана, прибыль ушла за кулисы: {delta}. Всего {points}.",
+    "{name} нажал x{stake}; аппарат риска кивнул и выставил счёт {delta}. Всего {points}. Очень деловой шум.",
+    "Рычаг x{stake} у {name} сработал не туда. {delta}. Всего {points}. Табло делает сочувственный вид.",
+    "x{stake} не простил ответ. {name}, бухгалтерия вынесла {delta} и странно довольна. Всего {points}.",
+    "Bzzzt: x{stake} у {name} превратился в учебный минус {delta}. Всего {points}. Прожектор записал.",
+)
+
+RISK_FAILURE_X3_TEMPLATES = (
+    "x{stake} открыл люк под табло. {name}, ставка была громкая, минус тоже: {delta}. Всего {points}.",
+    "{name} дёрнул x{stake}; аппарат риска хлопнул дверцей и унёс {delta}. Всего {points}. Драматично, почти бухгалтерски.",
+    "Та-даа... x{stake} не взлетел. {name}, прожектор видел всё и моргнул красным: {delta}. Всего {points}.",
+    "x{stake} сделал красивый щелчок и забрал табличку. {name}, смело. Не прибыльно, но смело. {delta}. Всего {points}.",
+    "Click-click! x{stake} у {name} превратился в ERROR-confetti: {delta}. Всего {points}. Табло просит минуту тишины.",
+)
+
 DAILY_TITLE_TEMPLATES = (
     "Итоги дня {date}:",
     "Занавес дня {date}: цифры выстроились и делают вид, что им не страшно:",
@@ -383,6 +399,17 @@ def score_event_text(
         )
 
     return _render(SCORE_WRONG_TEMPLATES, chooser, name=name, stake=stake, delta=delta, points=points)
+
+
+def risk_failure(
+    name: str,
+    stake: int,
+    delta: int,
+    points: int,
+    chooser: Callable[[Sequence[str]], str] | None = None,
+) -> str:
+    variants = RISK_FAILURE_X3_TEMPLATES if stake >= 3 else RISK_FAILURE_X2_TEMPLATES
+    return _render(variants, chooser, name=name, stake=stake, delta=delta, points=points)
 
 
 def daily_title(date: str, chooser: Callable[[Sequence[str]], str] | None = None) -> str:

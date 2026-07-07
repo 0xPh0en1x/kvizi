@@ -305,6 +305,55 @@ def test_poll_answer_announces_streak_milestone_to_announce_topic(tmp_path: Path
     assert "33" in announcement["text"]
 
 
+def test_poll_answer_announces_x2_and_x3_risk_failures_to_announce_topic(tmp_path: Path) -> None:
+    for stake, expected_delta in ((2, -10), (3, -20)):
+        case_dir = tmp_path / f"risk-{stake}"
+        case_dir.mkdir()
+        service, repository, telegram = make_service(case_dir)
+        repository.set_bot_setting("announce_thread_id", "999")
+
+        posted = service.post_question(difficulty="normal")
+        assert posted.posted is True
+
+        bet_result = service.handle_update(
+            {
+                "update_id": 10 + stake,
+                "callback_query": {
+                    "id": f"cb-risk-{stake}",
+                    "from": {"id": 7, "first_name": "Neo"},
+                    "data": f"bet:{stake}",
+                    "message": {"poll": {"id": str(posted.poll_id)}},
+                },
+            }
+        )
+        assert bet_result["bet"] is True
+        before_messages = len(telegram.sent_messages)
+
+        answer_result = service.handle_update(
+            {
+                "update_id": 20 + stake,
+                "poll_answer": {
+                    "poll_id": str(posted.poll_id),
+                    "user": {"id": 7, "first_name": "Neo"},
+                    "option_ids": [1],
+                },
+            }
+        )
+
+        assert answer_result["recorded"] is True
+        assert answer_result["delta"] == expected_delta
+        assert len(telegram.sent_messages) == before_messages + 2
+        score_message = telegram.sent_messages[-2]
+        announcement = telegram.sent_messages[-1]
+        assert score_message["message_thread_id"] == 101
+        assert announcement["message_thread_id"] == 999
+        assert announcement["disable_notification"] is True
+        assert "Neo" in announcement["text"]
+        assert f"x{stake}" in announcement["text"]
+        assert str(expected_delta) in announcement["text"]
+        assert str(answer_result["points"]) in announcement["text"]
+
+
 def test_top_command_can_filter_by_topic(tmp_path: Path) -> None:
     service, repository, telegram = make_service(tmp_path)
     _seed_topic_answer(

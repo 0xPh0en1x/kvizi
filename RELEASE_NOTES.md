@@ -33,6 +33,7 @@
 - Compact `/kvizi_prod_check` cron lines by hiding stored cron messages from the readiness summary.
 - Season leader change announcements in the configured announcement topic.
 - Streak milestone announcements for series bonuses in the configured announcement topic.
+- Risk-failure announcements for wrong x2/x3 answers in the configured announcement topic.
 
 ### Question operations
 
@@ -53,7 +54,7 @@
 Last local verification:
 
 ```text
-python -m pytest -q -> 72 passed
+python -m pytest -q -> 74 passed
 python scripts/validate_questions.py -> OK, warnings expected for sample CSV
 python scripts/smoke_check.py -> failures=0, warnings expected locally
 ```

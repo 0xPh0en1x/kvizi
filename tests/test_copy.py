@@ -80,6 +80,14 @@ def test_persona_templates_stay_telegram_friendly_and_characterful() -> None:
             template.format(name="Ada", stake=3, delta=-20, points=28)
             for template in copy.SCORE_WRONG_TEMPLATES
         ),
+        *(
+            template.format(name="Ada", stake=2, delta=-10, points=18)
+            for template in copy.RISK_FAILURE_X2_TEMPLATES
+        ),
+        *(
+            template.format(name="Ada", stake=3, delta=-20, points=8)
+            for template in copy.RISK_FAILURE_X3_TEMPLATES
+        ),
         *(template.format(date="07.07.2026 MSK") for template in copy.DAILY_TITLE_TEMPLATES),
         *copy.DAILY_TOP_HEADERS,
         *copy.DAILY_EMPTY_TOP_LINES,
@@ -153,3 +161,24 @@ def test_streak_milestone_mentions_streak_bonus_and_points() -> None:
     assert all("5" in variant for variant in variants)
     assert all("+7" in variant for variant in variants)
     assert all("88" in variant for variant in variants)
+
+
+def test_risk_failure_mentions_stake_delta_and_points() -> None:
+    x2_variants = {
+        copy.risk_failure("@neo", 2, -10, 18, _pick(index))
+        for index in range(len(copy.RISK_FAILURE_X2_TEMPLATES))
+    }
+    x3_variants = {
+        copy.risk_failure("@neo", 3, -20, 8, _pick(index))
+        for index in range(len(copy.RISK_FAILURE_X3_TEMPLATES))
+    }
+
+    assert len(x2_variants) >= 3
+    assert len(x3_variants) >= 3
+    assert all("@neo" in variant for variant in x2_variants | x3_variants)
+    assert all("x2" in variant for variant in x2_variants)
+    assert all("x3" in variant for variant in x3_variants)
+    assert all("-10" in variant for variant in x2_variants)
+    assert all("-20" in variant for variant in x3_variants)
+    assert all("18" in variant for variant in x2_variants)
+    assert all("8" in variant for variant in x3_variants)
