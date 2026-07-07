@@ -532,6 +532,10 @@ class KviziService:
             )
             return {"ok": True, "command": command}
 
+        if command == "/kvizi_voice_preview":
+            self._reply(message, copy.voice_preview_text(self.rng.choice))
+            return {"ok": True, "command": command}
+
         if command == "/kvizi_recent":
             self._reply(message, self._format_recent())
             return {"ok": True, "command": command}

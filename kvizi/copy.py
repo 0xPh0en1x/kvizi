@@ -89,6 +89,7 @@ ADMIN_HELP_TEXT = (
     "/kvizi_bind <topic_key> <weight> - привязать текущий топик\n"
     "/kvizi_topics - список привязанных топиков\n"
     "/kvizi_config - текущий баланс очков и вызовов\n"
+    "/kvizi_voice_preview - пример текущего голоса Квизи\n"
     "/kvizi_recent - последние вопросы и ответы\n"
     "/kvizi_errors - последние ошибки Telegram/cron\n"
     "/kvizi_review - ревизия качества вопросов\n"
@@ -383,6 +384,58 @@ def no_questions_text(chooser: Callable[[Sequence[str]], str] | None = None) -> 
             "Карточки закончились. Квизи делает вид, что так и было задумано.",
         ),
         chooser,
+    )
+
+
+def voice_preview_text(chooser: Callable[[Sequence[str]], str] | None = None) -> str:
+    return "\n".join(
+        [
+            "Голосовой пример Квизи:",
+            "",
+            "Опрос:",
+            poll_title("Что делает DNS?", chooser),
+            "",
+            "Анонс:",
+            question_announcement(
+                topic_key="network",
+                difficulty="normal",
+                base=10,
+                link="https://t.me/c/123456789/42",
+                chooser=chooser,
+            ),
+            "",
+            "Ставки:",
+            f"- {bet_accepted(3, chooser)}",
+            f"- {bet_rejected('ответ уже принят', chooser)}",
+            "",
+            "Счёт:",
+            "- "
+            + score_event_text(
+                name="@guest",
+                is_challenge=False,
+                is_correct=True,
+                stake=2,
+                delta=23,
+                streak_bonus=3,
+                points=48,
+                chooser=chooser,
+            ),
+            "- "
+            + score_event_text(
+                name="@guest",
+                is_challenge=False,
+                is_correct=False,
+                stake=3,
+                delta=-20,
+                points=28,
+                chooser=chooser,
+            ),
+            "",
+            "Итоги дня:",
+            daily_title("07.07.2026 MSK", chooser),
+            daily_top_header(chooser),
+            season_leader_line("@guest", 99, chooser),
+        ]
     )
 
 

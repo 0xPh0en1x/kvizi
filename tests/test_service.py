@@ -374,6 +374,38 @@ def test_admin_config_command_shows_configured_scoring_rules(tmp_path: Path) -> 
     assert "- ccna: стоимость 20, награда +55" in text
 
 
+def test_admin_voice_preview_shows_current_copy_without_side_effects(tmp_path: Path) -> None:
+    service, _repository, telegram = make_service(tmp_path)
+
+    result = service.handle_update(
+        {
+            "update_id": 94,
+            "message": {
+                "message_id": 82,
+                "message_thread_id": 101,
+                "chat": {"id": "-1001"},
+                "from": {"id": 7, "first_name": "Admin"},
+                "text": "/kvizi_voice_preview",
+            },
+        }
+    )
+
+    assert result["command"] == "/kvizi_voice_preview"
+    assert telegram.sent_polls == []
+    message = telegram.sent_messages[-1]
+    assert message["message_thread_id"] == 101
+    text = message["text"]
+    assert "Голосовой пример Квизи:" in text
+    assert "Опрос:" in text
+    assert "Анонс:" in text
+    assert "Ставки:" in text
+    assert "Счёт:" in text
+    assert "Итоги дня:" in text
+    assert "network" in text
+    assert "https://t.me/c/123456789/42" in text
+    assert "@guest" in text
+
+
 def test_post_question_sends_announcement_with_private_group_link(tmp_path: Path) -> None:
     service, repository, telegram = make_service(tmp_path)
     repository.set_bot_setting("announce_thread_id", "999")

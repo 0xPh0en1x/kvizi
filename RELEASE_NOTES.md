@@ -27,6 +27,7 @@
 - Production observability commands: `/kvizi_recent` and `/kvizi_errors`.
 - Question quality review via `/kvizi_review`.
 - Sharper persona copy variants for poll titles, announcements, bets, score events, and daily summaries: more irony, uneven rhythm, and theatrical Kvizi flavor.
+- Admin voice smoke command `/kvizi_voice_preview` for checking current Kvizi copy without posting polls or changing scores.
 
 ### Question operations
 
@@ -47,7 +48,7 @@
 Last local verification:
 
 ```text
-python -m pytest -q -> 64 passed
+python -m pytest -q -> 65 passed
 python scripts/validate_questions.py -> OK, warnings expected for sample CSV
 python scripts/smoke_check.py -> failures=0, warnings expected locally
 ```
