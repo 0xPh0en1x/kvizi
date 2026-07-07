@@ -1344,7 +1344,7 @@ class KviziService:
 
     def _format_daily_summary(self, summary_date: str, stats: dict[str, Any]) -> str:
         lines = [
-            f"Итоги дня {summary_date}:",
+            f"Итоги дня {self._short_date(summary_date)}:",
             f"Вопросы: {stats['questions_count']}",
             (
                 f"Ответы: {stats['answers_count']} от {stats['participants_count']} участников. "
@@ -1394,6 +1394,16 @@ class KviziService:
 
     def _signed(self, value: int) -> str:
         return f"+{value}" if value > 0 else str(value)
+
+    def _short_date(self, value: str) -> str:
+        try:
+            dt = datetime.fromisoformat(value)
+        except ValueError:
+            return value
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=self.settings.timezone)
+        timezone_label = dt.astimezone(self.settings.timezone).tzname() or self.settings.timezone_name
+        return f"{dt:%d.%m.%Y} {timezone_label}"
 
     def _short_dt(self, value: str) -> str:
         try:

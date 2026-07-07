@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from io import StringIO
@@ -1616,7 +1617,8 @@ def test_admin_daily_posts_summary_to_current_topic(tmp_path: Path) -> None:
     assert result["posted"] is True
     message = telegram.sent_messages[-1]
     assert message["message_thread_id"] == 101
-    assert "Итоги дня" in message["text"]
+    first_line = message["text"].splitlines()[0]
+    assert re.fullmatch(r"Итоги дня \d{2}\.\d{2}\.\d{4} MSK:", first_line)
     assert "Вопросы: 1" in message["text"]
     assert "Ответы: 1 от 1 участников" in message["text"]
     assert "@ada" in message["text"]
@@ -1642,7 +1644,8 @@ def test_cron_daily_posts_once_and_skips_duplicate(tmp_path: Path) -> None:
     assert second.get_json()["posted"] is False
     assert len(telegram.sent_messages) == 1
     assert telegram.sent_messages[0]["message_thread_id"] == 999
-    assert "Итоги дня" in telegram.sent_messages[0]["text"]
+    first_line = telegram.sent_messages[0]["text"].splitlines()[0]
+    assert re.fullmatch(r"Итоги дня \d{2}\.\d{2}\.\d{4} MSK:", first_line)
 
 
 def test_cron_backup_requires_secret_and_sends_json_export_to_admin(tmp_path: Path) -> None:
