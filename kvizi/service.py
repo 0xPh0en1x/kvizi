@@ -174,29 +174,12 @@ class KviziService:
         now_iso = utc_now_iso()
         expired = self.repository.expired_active_polls(now_iso)
         for poll in expired:
-            had_human_answers = (
-                self.repository.human_answer_count_for_poll(str(poll["poll_id"])) > 0
-            )
-            self.repository.settle_unanswered_challenge(
-                season=self.settings.season_name,
-                poll=poll,
+            self._close_poll(
+                poll,
                 now_iso=now_iso,
+                stop_error_event="stop_poll_failed",
+                announce_if_unanswered=True,
             )
-            try:
-                self.telegram.stop_poll(
-                    chat_id=self.settings.telegram_chat_id,
-                    message_id=int(poll["telegram_message_id"]),
-                )
-            except TelegramApiError as exc:
-                self.repository.record_error_event(
-                    source="telegram",
-                    event="stop_poll_failed",
-                    message=str(exc),
-                )
-                pass
-            self.repository.mark_poll_closed(str(poll["poll_id"]))
-            if not had_human_answers:
-                self._announce_no_answers_closed(poll)
         return len(expired)
 
     def post_question(
@@ -385,6 +368,11 @@ class KviziService:
     def _handle_callback_query(self, query: dict[str, Any]) -> dict[str, Any]:
         data = str(query.get("data") or "")
         user = query.get("from") or {}
+        message = query.get("message") or {}
+        chat_id = str((message.get("chat") or {}).get("id") or "")
+        if self.settings.telegram_chat_id and chat_id != self.settings.telegram_chat_id:
+            return {"ok": True, "ignored": "foreign_chat"}
+
         self.repository.upsert_user(user)
 
         if not data.startswith("bet:"):
@@ -400,7 +388,6 @@ class KviziService:
         except ValueError:
             stake = 1
 
-        message = query.get("message") or {}
         poll_id = str((message.get("poll") or {}).get("id") or "")
         if not poll_id:
             self.telegram.answer_callback_query(
@@ -759,28 +746,46 @@ class KviziService:
 
         closed = 0
         for poll in polls:
-            self.repository.settle_unanswered_challenge(
-                season=self.settings.season_name,
-                poll=poll,
+            self._close_poll(
+                poll,
                 now_iso=now_iso,
+                stop_error_event="close_here_stop_poll_failed",
+                announce_if_unanswered=True,
             )
-            try:
-                self.telegram.stop_poll(
-                    chat_id=self.settings.telegram_chat_id,
-                    message_id=int(poll["telegram_message_id"]),
-                )
-            except TelegramApiError as exc:
-                self.repository.record_error_event(
-                    source="telegram",
-                    event="close_here_stop_poll_failed",
-                    message=str(exc),
-                )
-                pass
-            self.repository.mark_poll_closed(str(poll["poll_id"]))
             closed += 1
 
         self._reply(message, f"Закрыто активных вопросов в этом топике: {closed}.")
         return closed
+
+    def _close_poll(
+        self,
+        poll: dict[str, Any],
+        *,
+        now_iso: str,
+        stop_error_event: str,
+        announce_if_unanswered: bool,
+    ) -> None:
+        poll_id = str(poll["poll_id"])
+        had_human_answers = self.repository.human_answer_count_for_poll(poll_id) > 0
+        self.repository.settle_unanswered_challenge(
+            season=self.settings.season_name,
+            poll=poll,
+            now_iso=now_iso,
+        )
+        try:
+            self.telegram.stop_poll(
+                chat_id=self.settings.telegram_chat_id,
+                message_id=int(poll["telegram_message_id"]),
+            )
+        except TelegramApiError as exc:
+            self.repository.record_error_event(
+                source="telegram",
+                event=stop_error_event,
+                message=str(exc),
+            )
+        self.repository.mark_poll_closed(poll_id)
+        if announce_if_unanswered and not had_human_answers:
+            self._announce_no_answers_closed(poll)
 
     def _postnow_topic_key(self, args: list[str], thread_id: int | None) -> str | None:
         if args:
@@ -1761,12 +1766,10 @@ class KviziService:
         return title if len(title) <= 300 else question.text[:300]
 
     def _announce_question(self, route: TopicRoute, question: Question, question_link: str | None) -> None:
-        announce_thread_id = self._announce_thread_id()
-        if announce_thread_id is None or not question_link:
+        if not question_link:
             return
-        self.telegram.send_message(
-            chat_id=self.settings.telegram_chat_id,
-            message_thread_id=announce_thread_id,
+
+        self._send_announcement(
             text=copy.question_announcement(
                 route.topic_key,
                 question.difficulty,
@@ -1774,7 +1777,7 @@ class KviziService:
                 base_points(question.difficulty, self.settings.difficulty_points),
                 self.rng.choice,
             ),
-            disable_notification=True,
+            event="question_announcement_failed",
         )
 
     def _announce_no_answers_closed(self, poll: dict[str, Any]) -> None:
@@ -1786,30 +1789,49 @@ class KviziService:
         if announce_thread_id is None or not question_link:
             return
 
-        try:
-            self.telegram.send_message(
-                chat_id=self.settings.telegram_chat_id,
-                message_thread_id=announce_thread_id,
-                text=copy.no_answers_closed(
-                    topic_key=str(poll["topic_key"]),
-                    difficulty=str(poll["difficulty"]),
-                    link=question_link,
-                    chooser=self.rng.choice,
-                ),
-                disable_notification=True,
-            )
-        except TelegramApiError as exc:
-            self.repository.record_error_event(
-                source="telegram",
-                event="no_answers_announcement_failed",
-                message=str(exc),
-            )
+        self._send_announcement(
+            text=copy.no_answers_closed(
+                topic_key=str(poll["topic_key"]),
+                difficulty=str(poll["difficulty"]),
+                link=question_link,
+                chooser=self.rng.choice,
+            ),
+            event="no_answers_announcement_failed",
+            message_thread_id=announce_thread_id,
+        )
 
     def _announce_thread_id(self) -> int | None:
         if self.settings.announce_thread_id is not None:
             return self.settings.announce_thread_id
         value = self.repository.get_bot_setting("announce_thread_id")
         return int(value) if value else None
+
+    def _send_announcement(
+        self,
+        *,
+        text: str,
+        event: str,
+        message_thread_id: int | None = None,
+    ) -> bool:
+        thread_id = self._announce_thread_id() if message_thread_id is None else message_thread_id
+        if thread_id is None:
+            return False
+
+        try:
+            self.telegram.send_message(
+                chat_id=self.settings.telegram_chat_id,
+                message_thread_id=thread_id,
+                text=text,
+                disable_notification=True,
+            )
+        except TelegramApiError as exc:
+            self.repository.record_error_event(
+                source="telegram",
+                event=event,
+                message=str(exc),
+            )
+            return False
+        return True
 
     def _message_link(self, message_id: int) -> str | None:
         username = self.settings.chat_username
@@ -1823,9 +1845,8 @@ class KviziService:
         return None
 
     def _score_event_text(self, user: dict[str, Any], result: Any) -> str:
-        name = user.get("first_name") or user.get("username") or user.get("id")
         return copy.score_event_text(
-            name=name,
+            name=self._user_event_name(user),
             is_challenge=bool(result.is_challenge),
             is_correct=bool(result.is_correct),
             stake=int(result.stake),
@@ -1855,28 +1876,19 @@ class KviziService:
         if announce_thread_id is None:
             return
 
-        name = user.get("first_name") or user.get("username") or user.get("id")
-        try:
-            self.telegram.send_message(
-                chat_id=self.settings.telegram_chat_id,
-                message_thread_id=announce_thread_id,
-                text=copy.first_answer_of_day(
-                    name=str(name),
-                    topic_key=str(poll["topic_key"]),
-                    difficulty=str(poll["difficulty"]),
-                    is_correct=bool(result.is_correct),
-                    delta=int(result.delta),
-                    points=int(result.points),
-                    chooser=self.rng.choice,
-                ),
-                disable_notification=True,
-            )
-        except TelegramApiError as exc:
-            self.repository.record_error_event(
-                source="telegram",
-                event="first_answer_announcement_failed",
-                message=str(exc),
-            )
+        self._send_announcement(
+            text=copy.first_answer_of_day(
+                name=self._user_event_name(user),
+                topic_key=str(poll["topic_key"]),
+                difficulty=str(poll["difficulty"]),
+                is_correct=bool(result.is_correct),
+                delta=int(result.delta),
+                points=int(result.points),
+                chooser=self.rng.choice,
+            ),
+            event="first_answer_announcement_failed",
+            message_thread_id=announce_thread_id,
+        )
 
     def _current_season_leader(self) -> dict[str, Any] | None:
         rows = self.repository.leaderboard(self.settings.season_name, limit=1)
@@ -1898,24 +1910,16 @@ class KviziService:
         if announce_thread_id is None:
             return
 
-        try:
-            self.telegram.send_message(
-                chat_id=self.settings.telegram_chat_id,
-                message_thread_id=announce_thread_id,
-                text=copy.season_leader_change(
-                    new_name=self._display_name(current_leader),
-                    old_name=self._display_name(previous_leader),
-                    points=int(current_leader["points"]),
-                    chooser=self.rng.choice,
-                ),
-                disable_notification=True,
-            )
-        except TelegramApiError as exc:
-            self.repository.record_error_event(
-                source="telegram",
-                event="leader_announcement_failed",
-                message=str(exc),
-            )
+        self._send_announcement(
+            text=copy.season_leader_change(
+                new_name=self._display_name(current_leader),
+                old_name=self._display_name(previous_leader),
+                points=int(current_leader["points"]),
+                chooser=self.rng.choice,
+            ),
+            event="leader_announcement_failed",
+            message_thread_id=announce_thread_id,
+        )
 
     def _announce_risk_failure(self, user: dict[str, Any], result: Any) -> None:
         if not self.settings.announce_risk_failures:
@@ -1928,26 +1932,17 @@ class KviziService:
         if announce_thread_id is None:
             return
 
-        name = user.get("first_name") or user.get("username") or user.get("id")
-        try:
-            self.telegram.send_message(
-                chat_id=self.settings.telegram_chat_id,
-                message_thread_id=announce_thread_id,
-                text=copy.risk_failure(
-                    name=str(name),
-                    stake=int(result.stake),
-                    delta=int(result.delta),
-                    points=int(result.points),
-                    chooser=self.rng.choice,
-                ),
-                disable_notification=True,
-            )
-        except TelegramApiError as exc:
-            self.repository.record_error_event(
-                source="telegram",
-                event="risk_failure_announcement_failed",
-                message=str(exc),
-            )
+        self._send_announcement(
+            text=copy.risk_failure(
+                name=self._user_event_name(user),
+                stake=int(result.stake),
+                delta=int(result.delta),
+                points=int(result.points),
+                chooser=self.rng.choice,
+            ),
+            event="risk_failure_announcement_failed",
+            message_thread_id=announce_thread_id,
+        )
 
     def _announce_streak_milestone(self, user: dict[str, Any], result: Any) -> None:
         if not self.settings.announce_streaks:
@@ -1960,23 +1955,17 @@ class KviziService:
         if announce_thread_id is None:
             return
 
-        name = user.get("first_name") or user.get("username") or user.get("id")
-        try:
-            self.telegram.send_message(
-                chat_id=self.settings.telegram_chat_id,
-                message_thread_id=announce_thread_id,
-                text=copy.streak_milestone(
-                    name=str(name),
-                    streak=int(result.streak),
-                    bonus=int(result.streak_bonus),
-                    points=int(result.points),
-                    chooser=self.rng.choice,
-                ),
-                disable_notification=True,
-            )
-        except TelegramApiError as exc:
-            self.repository.record_error_event(
-                source="telegram",
-                event="streak_announcement_failed",
-                message=str(exc),
-            )
+        self._send_announcement(
+            text=copy.streak_milestone(
+                name=self._user_event_name(user),
+                streak=int(result.streak),
+                bonus=int(result.streak_bonus),
+                points=int(result.points),
+                chooser=self.rng.choice,
+            ),
+            event="streak_announcement_failed",
+            message_thread_id=announce_thread_id,
+        )
+
+    def _user_event_name(self, user: dict[str, Any]) -> str:
+        return str(user.get("first_name") or user.get("username") or user.get("id"))

@@ -181,7 +181,10 @@ def test_post_bet_answer_updates_score_and_is_idempotent(tmp_path: Path) -> None
                 "id": "cb1",
                 "from": {"id": 42, "first_name": "Ada"},
                 "data": "bet:3",
-                "message": {"poll": {"id": "poll-1"}},
+                "message": {
+                    "chat": {"id": "-1001"},
+                    "poll": {"id": "poll-1"},
+                },
             },
         }
     )
@@ -218,6 +221,34 @@ def test_post_bet_answer_updates_score_and_is_idempotent(tmp_path: Path) -> None
     with repository.connect() as connection:
         answer = connection.execute("SELECT season FROM answers WHERE poll_id = ?", ("poll-1",)).fetchone()
     assert answer["season"] == "main"
+
+
+def test_callback_query_from_foreign_chat_is_ignored(tmp_path: Path) -> None:
+    service, repository, telegram = make_service(tmp_path)
+
+    posted = service.post_question(difficulty="normal")
+    assert posted.posted is True
+
+    result = service.handle_update(
+        {
+            "update_id": 4,
+            "callback_query": {
+                "id": "cb-foreign",
+                "from": {"id": 42, "first_name": "Ada"},
+                "data": "bet:3",
+                "message": {
+                    "chat": {"id": "-9999"},
+                    "poll": {"id": "poll-1"},
+                },
+            },
+        }
+    )
+
+    assert result["ignored"] == "foreign_chat"
+    assert telegram.callback_answers == []
+    with repository.connect() as connection:
+        bet_count = connection.execute("SELECT COUNT(*) FROM bets").fetchone()[0]
+    assert bet_count == 0
 
 
 def test_poll_answer_announces_new_season_leader_to_announce_topic(tmp_path: Path) -> None:
@@ -329,7 +360,10 @@ def test_poll_answer_announces_x2_and_x3_risk_failures_to_announce_topic(tmp_pat
                     "id": f"cb-risk-{stake}",
                     "from": {"id": 7, "first_name": "Neo"},
                     "data": f"bet:{stake}",
-                    "message": {"poll": {"id": str(posted.poll_id)}},
+                    "message": {
+                        "chat": {"id": "-1001"},
+                        "poll": {"id": str(posted.poll_id)},
+                    },
                 },
             }
         )
@@ -512,7 +546,10 @@ def test_risk_failure_announcement_can_be_disabled(tmp_path: Path) -> None:
                 "id": "cb-risk-disabled",
                 "from": {"id": 7, "first_name": "Neo"},
                 "data": "bet:2",
-                "message": {"poll": {"id": str(posted.poll_id)}},
+                "message": {
+                    "chat": {"id": "-1001"},
+                    "poll": {"id": str(posted.poll_id)},
+                },
             },
         }
     )
@@ -1099,7 +1136,10 @@ def test_challenge_rejects_requester_bet_and_penalizes_wrong_answer(tmp_path: Pa
                 "id": "cb1",
                 "from": {"id": 7, "first_name": "Admin"},
                 "data": "bet:3",
-                "message": {"poll": {"id": "poll-1"}},
+                "message": {
+                    "chat": {"id": "-1001"},
+                    "poll": {"id": "poll-1"},
+                },
             },
         }
     )
@@ -1258,6 +1298,104 @@ def test_close_here_stops_and_marks_active_polls_closed(tmp_path: Path) -> None:
     assert result["closed"] == 1
     assert len(telegram.stopped_polls) == 1
     assert repository.active_polls_for_thread(101, "2999-01-01T00:00:00+00:00") == []
+
+
+def test_close_here_announces_no_answers_to_announce_topic(tmp_path: Path) -> None:
+    service, repository, telegram = make_service(tmp_path)
+    repository.set_bot_setting("announce_thread_id", "999")
+    assert service.post_question(difficulty="normal").posted is True
+    before_messages = len(telegram.sent_messages)
+
+    result = service.handle_update(
+        {
+            "update_id": 63,
+            "message": {
+                "message_id": 79,
+                "message_thread_id": 101,
+                "chat": {"id": "-1001"},
+                "from": {"id": 7, "first_name": "Admin"},
+                "text": "/kvizi_close_here",
+            },
+        }
+    )
+
+    assert result["closed"] == 1
+    assert len(telegram.sent_messages) == before_messages + 2
+    announcement = telegram.sent_messages[-2]
+    reply = telegram.sent_messages[-1]
+    assert announcement["message_thread_id"] == 999
+    assert announcement["disable_notification"] is True
+    assert "network" in announcement["text"]
+    assert "normal" in announcement["text"]
+    assert "https://t.me/c/1/1" in announcement["text"]
+    assert reply["message_thread_id"] == 101
+    assert "Закрыто активных вопросов" in reply["text"]
+
+
+def test_close_here_does_not_announce_no_answers_when_poll_had_answer(tmp_path: Path) -> None:
+    service, repository, telegram = make_service(tmp_path)
+    repository.set_bot_setting("announce_thread_id", "999")
+    repository.create_poll(
+        poll_id="answered-active",
+        telegram_message_id=321,
+        question_id="q1",
+        topic_key="network",
+        message_thread_id=101,
+        correct_option_id=0,
+        difficulty="normal",
+        opened_at="2026-07-05T20:00:00+00:00",
+        closes_at="2999-01-01T00:00:00+00:00",
+        explanation="",
+    )
+    repository.record_answer(
+        season="main",
+        poll_id="answered-active",
+        user={"id": 7, "first_name": "Admin"},
+        option_ids=[0],
+        now_iso="2026-07-05T20:01:00+00:00",
+    )
+
+    result = service.handle_update(
+        {
+            "update_id": 64,
+            "message": {
+                "message_id": 79,
+                "message_thread_id": 101,
+                "chat": {"id": "-1001"},
+                "from": {"id": 7, "first_name": "Admin"},
+                "text": "/kvizi_close_here",
+            },
+        }
+    )
+
+    assert result["closed"] == 1
+    assert len(telegram.sent_messages) == 1
+    assert telegram.sent_messages[-1]["message_thread_id"] == 101
+    assert "Закрыто активных вопросов" in telegram.sent_messages[-1]["text"]
+
+
+def test_question_announcement_failure_is_non_blocking(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    repository = KviziRepository(settings.database_path)
+    repository.init_db()
+    repository.bind_topic("network", 101, 1)
+    repository.set_bot_setting("announce_thread_id", "999")
+    telegram = FailOnceSendMessageTelegram()
+    service = KviziService(
+        settings=settings,
+        repository=repository,
+        telegram=telegram,  # type: ignore[arg-type]
+        question_bank=make_question_bank(),
+    )
+
+    posted = service.post_question(difficulty="normal")
+
+    assert posted.posted is True
+    assert len(telegram.sent_polls) == 1
+    assert telegram.sent_messages == []
+    errors = repository.recent_error_events()
+    assert errors[-1]["event"] == "question_announcement_failed"
+    assert "proxy 503" in errors[-1]["message"]
 
 
 def test_admin_status_reports_loaded_questions_topics_active_polls_and_cron(tmp_path: Path) -> None:
