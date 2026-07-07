@@ -1351,6 +1351,7 @@ def test_admin_help_lists_commands_and_cron_endpoints(tmp_path: Path) -> None:
     assert "Диагностика:" in text
     assert "/kvizi_help" in text
     assert "/kvizi_prod_check" in text
+    assert "/kvizi_version" in text
     assert "/kvizi_status_compact" in text
     assert "/kvizi_recent" in text
     assert "/kvizi_errors" in text
@@ -1364,6 +1365,35 @@ def test_admin_help_lists_commands_and_cron_endpoints(tmp_path: Path) -> None:
     assert "POST /cron/backup" in text
     assert "python scripts/local_cron.py daily" in text
     assert "python scripts/local_cron.py backup" in text
+
+
+def test_admin_version_reports_deploy_identity(tmp_path: Path) -> None:
+    service, _repository, telegram = make_service(tmp_path)
+
+    result = service.handle_update(
+        {
+            "update_id": 521,
+            "message": {
+                "message_id": 811,
+                "message_thread_id": 101,
+                "chat": {"id": "-1001"},
+                "from": {"id": 7, "first_name": "Admin"},
+                "text": "/kvizi_version",
+            },
+        }
+    )
+
+    assert result["command"] == "/kvizi_version"
+    text = telegram.sent_messages[-1]["text"]
+    assert "Версия Квизи:" in text
+    assert "app: 0.1.0" in text
+    assert "git:" in text
+    assert "project_root:" in text
+    assert f"database: {service.settings.database_path}" in text
+    assert f"questions: {service.settings.questions_path}" in text
+    assert "question_count: 2" in text
+    assert "season: main" in text
+    assert "timezone: Europe/Moscow" in text
 
 
 def test_admin_questions_status_reports_csv_coverage(tmp_path: Path) -> None:

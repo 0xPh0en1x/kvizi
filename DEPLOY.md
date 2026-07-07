@@ -133,6 +133,7 @@ Useful checks:
 
 ```text
 /kvizi_help_admin
+/kvizi_version
 /kvizi_status_compact
 /kvizi_questions_status
 /kvizi_postnow

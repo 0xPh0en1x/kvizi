@@ -143,6 +143,7 @@ topic из текущего CSV.
 - `/kvizi_review` — показать вопросы с подозрительной статистикой или пустыми explanation/source
 - `/kvizi_status` — показать вопросы, топики, активные poll/challenge и последний cron
 - `/kvizi_status_compact` — короткий статус со счётчиками active/expired/challenge
+- `/kvizi_version` — показать версию кода, git commit и deploy-пути
 - `/kvizi_questions_status` — показать покрытие `questions.csv` по темам и сложностям
 - `/kvizi_questions_template [difficulty]` — отправить CSV-шаблон для новых вопросов
 - `/kvizi_close_here` — закрыть все активные вопросы в текущем топике

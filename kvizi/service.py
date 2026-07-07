@@ -5,14 +5,16 @@ import json
 import random
 import re
 import shutil
+import subprocess
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
 from io import StringIO
 from pathlib import Path
 from typing import Any
 
+from kvizi import __version__
 from kvizi import copy
-from kvizi.config import Settings
+from kvizi.config import PROJECT_ROOT, Settings
 from kvizi.database import KviziRepository, utc_now_iso
 from kvizi.export_state import export_state
 from kvizi.question_report import build_report, find_duplicate_ids, format_report_for_telegram
@@ -564,6 +566,10 @@ class KviziService:
             self._reply(message, self._format_prod_check())
             return {"ok": True, "command": command}
 
+        if command == "/kvizi_version":
+            self._reply(message, self._format_version())
+            return {"ok": True, "command": command}
+
         if command == "/kvizi_recent":
             self._reply(message, self._format_recent())
             return {"ok": True, "command": command}
@@ -941,6 +947,45 @@ class KviziService:
             )
 
         return "\n".join(lines)
+
+    def _format_version(self) -> str:
+        commit = self._git_value("rev-parse", "--short=12", "HEAD")
+        branch = self._git_value("rev-parse", "--abbrev-ref", "HEAD")
+        dirty = self._git_value("status", "--porcelain", "--untracked-files=no")
+        if commit and branch:
+            state = "dirty" if dirty else "clean"
+            git_line = f"{branch}@{commit} ({state})"
+        else:
+            git_line = "unavailable"
+
+        return "\n".join(
+            [
+                "Версия Квизи:",
+                f"app: {__version__}",
+                f"git: {git_line}",
+                f"project_root: {PROJECT_ROOT}",
+                f"database: {self.settings.database_path}",
+                f"questions: {self.settings.questions_path}",
+                f"question_count: {self.question_bank.count()}",
+                f"season: {self.settings.season_name}",
+                f"timezone: {self.settings.timezone_name}",
+            ]
+        )
+
+    def _git_value(self, *args: str) -> str:
+        try:
+            result = subprocess.run(
+                ["git", *args],
+                cwd=PROJECT_ROOT,
+                capture_output=True,
+                check=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=2,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return ""
+        return result.stdout.strip()
 
     def _format_prod_check(self) -> str:
         now = datetime.now(timezone.utc)

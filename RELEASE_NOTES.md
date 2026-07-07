@@ -29,6 +29,7 @@
 - Sharper persona copy variants for poll titles, announcements, bets, score events, and daily summaries: more irony, uneven rhythm, and theatrical Kvizi flavor.
 - Admin voice smoke command `/kvizi_voice_preview` for checking current Kvizi copy without posting polls or changing scores.
 - Public `/kvizi_help`, grouped `/kvizi_help_admin`, and `/kvizi_prod_check` for quick production readiness checks.
+- Admin `/kvizi_version` command for checking git commit, code version, deploy paths, and loaded question count.
 - Compact `/kvizi_errors` output and transient Telegram/proxy classification so temporary 503/proxy failures do not turn prod-check into WARN.
 - Compact `/kvizi_prod_check` cron lines by hiding stored cron messages from the readiness summary.
 - Season leader change announcements in the configured announcement topic.
@@ -46,6 +47,7 @@
 
 - `scripts/local_cron.py` for local cron endpoint runs.
 - `scripts/smoke_check.py` for pre-deploy smoke checks.
+- `PROD_CHECKLIST.md` for quick post-pull PythonAnywhere verification.
 - `.env.example` with deploy env vars.
 - `DEPLOY.md` with PythonAnywhere, Telegram webhook, and cron-job.org checklist.
 
@@ -54,7 +56,7 @@
 Last local verification:
 
 ```text
-python -m pytest -q -> 74 passed
+python -m pytest -q -> 75 passed
 python scripts/validate_questions.py -> OK, warnings expected for sample CSV
 python scripts/smoke_check.py -> failures=0, warnings expected locally
 ```

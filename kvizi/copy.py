@@ -127,6 +127,7 @@ ADMIN_HELP_TEXT = (
     "/kvizi_help_admin - эта справка\n"
     "/kvizi_help - справка для участников\n"
     "/kvizi_prod_check - быстрый production-check\n"
+    "/kvizi_version - версия кода и пути deploy\n"
     "/kvizi_status - подробный статус\n"
     "/kvizi_status_compact - короткий статус\n"
     "/kvizi_recent - последние вопросы и ответы\n"
