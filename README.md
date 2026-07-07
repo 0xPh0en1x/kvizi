@@ -52,6 +52,10 @@ $env:KVIZI_ADMIN_IDS="111111111,222222222"
 - `KVIZI_SEASON=main`
 - `KVIZI_ANNOUNCE_THREAD_ID=123` — необязательно, можно задать командой
 - `KVIZI_CHAT_USERNAME=my_public_group` — если группа публичная и нужны публичные ссылки
+- `KVIZI_ANNOUNCE_FIRST_ANSWER=true` — анонс первого ответа дня
+- `KVIZI_ANNOUNCE_NO_ANSWERS=true` — анонс вопросов, закрытых без ответов
+- `KVIZI_ANNOUNCE_RISK_FAILURES=true` — анонс проваленных x2/x3
+- `KVIZI_ANNOUNCE_STREAKS=true` — анонс бонусных серий
 - `KVIZI_DIFFICULTY_POINTS=easy:5,normal:10,hard:15,ccna:20` — базовые очки за правильный ответ
 - `KVIZI_CHALLENGE_REWARDS=easy:5:10,normal:10:25,hard:15:40,ccna:20:55` — `difficulty:cost:reward`
 

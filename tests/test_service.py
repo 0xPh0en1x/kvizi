@@ -88,6 +88,10 @@ def make_settings(tmp_path: Path) -> Settings:
         season_name="main",
         announce_thread_id=None,
         chat_username="",
+        announce_first_answer=True,
+        announce_no_answers=True,
+        announce_risk_failures=True,
+        announce_streaks=True,
         difficulty_points={"easy": 5, "normal": 10, "hard": 15},
         challenge_economy={
             "easy": {"cost": 5, "reward": 10},
@@ -388,6 +392,39 @@ def test_poll_answer_announces_first_answer_of_day_to_announce_topic(tmp_path: P
     assert "10" in announcement["text"]
 
 
+def test_first_answer_announcement_can_be_disabled(tmp_path: Path) -> None:
+    settings = replace(make_settings(tmp_path), announce_first_answer=False)
+    repository = KviziRepository(settings.database_path)
+    repository.init_db()
+    repository.bind_topic("network", 101, 1)
+    repository.set_bot_setting("announce_thread_id", "999")
+    telegram = FakeTelegram()
+    service = KviziService(
+        settings=settings,
+        repository=repository,
+        telegram=telegram,  # type: ignore[arg-type]
+        question_bank=make_question_bank(),
+    )
+
+    posted = service.post_question(difficulty="normal")
+    assert posted.posted is True
+    before_messages = len(telegram.sent_messages)
+
+    answer_result = service.handle_update(
+        {
+            "update_id": 32,
+            "poll_answer": {
+                "poll_id": str(posted.poll_id),
+                "user": {"id": 7, "first_name": "Neo"},
+                "option_ids": [0],
+            },
+        }
+    )
+
+    assert answer_result["recorded"] is True
+    assert len(telegram.sent_messages) == before_messages
+
+
 def test_close_expired_poll_announces_no_answers_to_announce_topic(tmp_path: Path) -> None:
     service, repository, telegram = make_service(tmp_path)
     repository.set_bot_setting("announce_thread_id", "999")
@@ -416,6 +453,138 @@ def test_close_expired_poll_announces_no_answers_to_announce_topic(tmp_path: Pat
     assert "network" in announcement["text"]
     assert "normal" in announcement["text"]
     assert "https://t.me/c/1/321" in announcement["text"]
+
+
+def test_no_answers_announcement_can_be_disabled(tmp_path: Path) -> None:
+    settings = replace(make_settings(tmp_path), announce_no_answers=False)
+    repository = KviziRepository(settings.database_path)
+    repository.init_db()
+    repository.bind_topic("network", 101, 1)
+    repository.set_bot_setting("announce_thread_id", "999")
+    telegram = FakeTelegram()
+    service = KviziService(
+        settings=settings,
+        repository=repository,
+        telegram=telegram,  # type: ignore[arg-type]
+        question_bank=make_question_bank(),
+    )
+    repository.create_poll(
+        poll_id="expired-empty",
+        telegram_message_id=321,
+        question_id="q1",
+        topic_key="network",
+        message_thread_id=101,
+        correct_option_id=0,
+        difficulty="normal",
+        opened_at="1999-01-01T00:00:00+00:00",
+        closes_at="2000-01-01T00:00:00+00:00",
+        explanation="",
+    )
+
+    closed = service.close_expired_polls()
+
+    assert closed == 1
+    assert telegram.stopped_polls == [{"chat_id": "-1001", "message_id": 321}]
+    assert telegram.sent_messages == []
+
+
+def test_risk_failure_announcement_can_be_disabled(tmp_path: Path) -> None:
+    settings = replace(make_settings(tmp_path), announce_risk_failures=False)
+    repository = KviziRepository(settings.database_path)
+    repository.init_db()
+    repository.bind_topic("network", 101, 1)
+    repository.set_bot_setting("announce_thread_id", "999")
+    _seed_today_answer(repository, user_id=900, username="seed", points_difficulty="easy")
+    telegram = FakeTelegram()
+    service = KviziService(
+        settings=settings,
+        repository=repository,
+        telegram=telegram,  # type: ignore[arg-type]
+        question_bank=make_question_bank(),
+    )
+
+    posted = service.post_question(difficulty="normal")
+    assert posted.posted is True
+    service.handle_update(
+        {
+            "update_id": 33,
+            "callback_query": {
+                "id": "cb-risk-disabled",
+                "from": {"id": 7, "first_name": "Neo"},
+                "data": "bet:2",
+                "message": {"poll": {"id": str(posted.poll_id)}},
+            },
+        }
+    )
+    before_messages = len(telegram.sent_messages)
+
+    answer_result = service.handle_update(
+        {
+            "update_id": 34,
+            "poll_answer": {
+                "poll_id": str(posted.poll_id),
+                "user": {"id": 7, "first_name": "Neo"},
+                "option_ids": [1],
+            },
+        }
+    )
+
+    assert answer_result["recorded"] is True
+    assert answer_result["delta"] == -10
+    assert len(telegram.sent_messages) == before_messages + 1
+    assert telegram.sent_messages[-1]["message_thread_id"] == 101
+
+
+def test_streak_announcement_can_be_disabled(tmp_path: Path) -> None:
+    settings = replace(make_settings(tmp_path), announce_streaks=False)
+    repository = KviziRepository(settings.database_path)
+    repository.init_db()
+    repository.bind_topic("network", 101, 1)
+    repository.set_bot_setting("announce_thread_id", "999")
+    _seed_today_answer(repository, user_id=900, username="seed", points_difficulty="easy")
+    _seed_topic_answer(
+        repository,
+        poll_id="neo-first",
+        topic_key="network",
+        user_id=7,
+        username="neo",
+        difficulty="normal",
+    )
+    _seed_topic_answer(
+        repository,
+        poll_id="neo-second",
+        topic_key="network",
+        user_id=7,
+        username="neo",
+        difficulty="normal",
+    )
+    telegram = FakeTelegram()
+    service = KviziService(
+        settings=settings,
+        repository=repository,
+        telegram=telegram,  # type: ignore[arg-type]
+        question_bank=make_question_bank(),
+    )
+
+    posted = service.post_question(difficulty="normal")
+    assert posted.posted is True
+    before_messages = len(telegram.sent_messages)
+
+    answer_result = service.handle_update(
+        {
+            "update_id": 35,
+            "poll_answer": {
+                "poll_id": str(posted.poll_id),
+                "user": {"id": 7, "first_name": "Neo"},
+                "option_ids": [0],
+            },
+        }
+    )
+
+    assert answer_result["recorded"] is True
+    assert answer_result["delta"] == 13
+    assert len(telegram.sent_messages) == before_messages + 1
+    assert telegram.sent_messages[-1]["message_thread_id"] == 101
 
 
 def test_top_command_can_filter_by_topic(tmp_path: Path) -> None:
@@ -599,6 +768,11 @@ def test_admin_config_command_shows_configured_scoring_rules(tmp_path: Path) -> 
     assert "- hard: 15" in text
     assert "- ccna: 20" in text
     assert "- ccna: стоимость 20, награда +55" in text
+    assert "Анонсы:" in text
+    assert "- first_answer: on" in text
+    assert "- no_answers: on" in text
+    assert "- risk_failures: on" in text
+    assert "- streaks: on" in text
 
 
 def test_admin_voice_preview_shows_current_copy_without_side_effects(tmp_path: Path) -> None:

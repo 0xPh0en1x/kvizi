@@ -81,6 +81,7 @@ USER_HELP_TEXT = (
 def config_text(
     difficulty_points: dict[str, int] | None = None,
     challenge_economy: dict[str, dict[str, int]] | None = None,
+    announce_flags: dict[str, bool] | None = None,
 ) -> str:
     difficulty_points = difficulty_points or DIFFICULTY_BASE_POINTS
     challenge_economy = challenge_economy or CHALLENGE_ECONOMY
@@ -98,6 +99,12 @@ def config_text(
         )
         for difficulty in difficulties
     )
+    if announce_flags is not None:
+        lines.append("Анонсы:")
+        lines.extend(
+            f"- {key}: {'on' if enabled else 'off'}"
+            for key, enabled in announce_flags.items()
+        )
     return "\n".join(lines)
 
 ADMIN_HELP_TEXT = (

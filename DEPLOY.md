@@ -32,6 +32,10 @@ KVIZI_OPEN_SECONDS=7200
 KVIZI_DB_PATH=/home/YOUR_USERNAME/kvizi/data/kvizi.sqlite3
 KVIZI_QUESTIONS_PATH=/home/YOUR_USERNAME/kvizi/questions.csv
 KVIZI_SEASON=main
+KVIZI_ANNOUNCE_FIRST_ANSWER=true
+KVIZI_ANNOUNCE_NO_ANSWERS=true
+KVIZI_ANNOUNCE_RISK_FAILURES=true
+KVIZI_ANNOUNCE_STREAKS=true
 KVIZI_DIFFICULTY_POINTS=easy:5,normal:10,hard:15,ccna:20
 KVIZI_CHALLENGE_REWARDS=easy:5:10,normal:10:25,hard:15:40,ccna:20:55
 ```
@@ -54,6 +58,10 @@ os.environ["KVIZI_CRON_SECRET"] = "..."
 os.environ["KVIZI_ADMIN_IDS"] = "111111111,222222222"
 os.environ["KVIZI_DB_PATH"] = "/home/YOUR_USERNAME/kvizi/data/kvizi.sqlite3"
 os.environ["KVIZI_QUESTIONS_PATH"] = "/home/YOUR_USERNAME/kvizi/questions.csv"
+os.environ["KVIZI_ANNOUNCE_FIRST_ANSWER"] = "true"
+os.environ["KVIZI_ANNOUNCE_NO_ANSWERS"] = "true"
+os.environ["KVIZI_ANNOUNCE_RISK_FAILURES"] = "true"
+os.environ["KVIZI_ANNOUNCE_STREAKS"] = "true"
 os.environ["KVIZI_DIFFICULTY_POINTS"] = "easy:5,normal:10,hard:15,ccna:20"
 os.environ["KVIZI_CHALLENGE_REWARDS"] = "easy:5:10,normal:10:25,hard:15:40,ccna:20:55"
 

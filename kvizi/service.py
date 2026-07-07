@@ -564,6 +564,7 @@ class KviziService:
                 copy.config_text(
                     self.settings.difficulty_points,
                     self.settings.challenge_economy,
+                    self._announce_flags(),
                 ),
             )
             return {"ok": True, "command": command}
@@ -841,6 +842,14 @@ class KviziService:
 
     def _known_topic_keys(self) -> set[str]:
         return self.question_bank.topics() | {str(topic["topic_key"]) for topic in self.repository.list_topics()}
+
+    def _announce_flags(self) -> dict[str, bool]:
+        return {
+            "first_answer": self.settings.announce_first_answer,
+            "no_answers": self.settings.announce_no_answers,
+            "risk_failures": self.settings.announce_risk_failures,
+            "streaks": self.settings.announce_streaks,
+        }
 
     def _format_status(self) -> str:
         now_iso = utc_now_iso()
@@ -1769,6 +1778,9 @@ class KviziService:
         )
 
     def _announce_no_answers_closed(self, poll: dict[str, Any]) -> None:
+        if not self.settings.announce_no_answers:
+            return
+
         announce_thread_id = self._announce_thread_id()
         question_link = self._message_link(int(poll["telegram_message_id"]))
         if announce_thread_id is None or not question_link:
@@ -1829,6 +1841,9 @@ class KviziService:
         result: Any,
         poll: dict[str, Any] | None,
     ) -> None:
+        if not self.settings.announce_first_answer:
+            return
+
         if poll is None:
             return
 
@@ -1903,6 +1918,9 @@ class KviziService:
             )
 
     def _announce_risk_failure(self, user: dict[str, Any], result: Any) -> None:
+        if not self.settings.announce_risk_failures:
+            return
+
         if bool(result.is_correct) or int(result.stake) <= 1:
             return
 
@@ -1932,6 +1950,9 @@ class KviziService:
             )
 
     def _announce_streak_milestone(self, user: dict[str, Any], result: Any) -> None:
+        if not self.settings.announce_streaks:
+            return
+
         if int(result.streak_bonus) <= 0:
             return
 

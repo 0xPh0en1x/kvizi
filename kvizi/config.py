@@ -20,6 +20,17 @@ def _parse_admin_ids(raw: str) -> set[int]:
     return result
 
 
+def _parse_bool(raw: str | None, default: bool = True) -> bool:
+    if raw is None or not raw.strip():
+        return default
+    value = raw.strip().lower()
+    if value in {"1", "true", "yes", "y", "on"}:
+        return True
+    if value in {"0", "false", "no", "n", "off"}:
+        return False
+    raise ValueError(f"Invalid boolean value: {raw!r}")
+
+
 @dataclass(frozen=True)
 class Settings:
     telegram_bot_token: str
@@ -34,6 +45,10 @@ class Settings:
     season_name: str
     announce_thread_id: int | None
     chat_username: str
+    announce_first_answer: bool
+    announce_no_answers: bool
+    announce_risk_failures: bool
+    announce_streaks: bool
     difficulty_points: dict[str, int]
     challenge_economy: dict[str, dict[str, int]]
 
@@ -56,6 +71,10 @@ def load_settings() -> Settings:
         season_name=os.getenv("KVIZI_SEASON", "main"),
         announce_thread_id=_parse_optional_int(os.getenv("KVIZI_ANNOUNCE_THREAD_ID", "")),
         chat_username=os.getenv("KVIZI_CHAT_USERNAME", "").strip().lstrip("@"),
+        announce_first_answer=_parse_bool(os.getenv("KVIZI_ANNOUNCE_FIRST_ANSWER"), True),
+        announce_no_answers=_parse_bool(os.getenv("KVIZI_ANNOUNCE_NO_ANSWERS"), True),
+        announce_risk_failures=_parse_bool(os.getenv("KVIZI_ANNOUNCE_RISK_FAILURES"), True),
+        announce_streaks=_parse_bool(os.getenv("KVIZI_ANNOUNCE_STREAKS"), True),
         difficulty_points=parse_difficulty_points(os.getenv("KVIZI_DIFFICULTY_POINTS")),
         challenge_economy=parse_challenge_economy(os.getenv("KVIZI_CHALLENGE_REWARDS")),
     )
