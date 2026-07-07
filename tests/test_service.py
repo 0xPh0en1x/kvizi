@@ -471,6 +471,52 @@ def test_admin_prod_check_reports_ready_state(tmp_path: Path) -> None:
     assert "FAIL" not in text
 
 
+def test_admin_prod_check_treats_transient_telegram_errors_as_info(tmp_path: Path) -> None:
+    service, repository, telegram = make_service(tmp_path)
+    repository.set_bot_setting("announce_thread_id", "999")
+    now = datetime.now(timezone.utc)
+    for index, status in enumerate(
+        ("posted", "maintenance_ok", "daily_posted", "backup_sent"),
+        start=1,
+    ):
+        started_at = (now - timedelta(minutes=index + 1)).isoformat()
+        finished_at = (now - timedelta(minutes=index)).isoformat()
+        repository.record_cron_run(started_at, finished_at, status, "ok")
+    repository.record_error_event(
+        source="telegram",
+        event="webhook_update_failed",
+        message=(
+            "Telegram sendMessage request failed after 3 attempts: "
+            "HTTPSConnectionPool(host='api.telegram.org', port=443): "
+            "Max retries exceeded with url: /bot<bot_token>/sendMessage "
+            "(Caused by ProxyError('Unable to connect to proxy', "
+            "OSError('Tunnel connection failed: 503 Service Unavailable')))"
+        ),
+        created_at=(now - timedelta(minutes=2)).isoformat(),
+    )
+
+    result = service.handle_update(
+        {
+            "update_id": 97,
+            "message": {
+                "message_id": 85,
+                "message_thread_id": 101,
+                "chat": {"id": "-1001"},
+                "from": {"id": 7, "first_name": "Admin"},
+                "text": "/kvizi_prod_check",
+            },
+        }
+    )
+
+    assert result["command"] == "/kvizi_prod_check"
+    text = telegram.sent_messages[-1]["text"]
+    assert "Prod-check Квизи: OK" in text
+    assert "[INFO] transient Telegram/proxy events: 1; смотри /kvizi_errors" in text
+    assert "свежие error events" not in text
+    assert "[WARN]" not in text
+    assert "[FAIL]" not in text
+
+
 def test_post_question_sends_announcement_with_private_group_link(tmp_path: Path) -> None:
     service, repository, telegram = make_service(tmp_path)
     repository.set_bot_setting("announce_thread_id", "999")
@@ -940,7 +986,13 @@ def test_admin_errors_reports_error_events_and_failed_cron(tmp_path: Path) -> No
     repository.record_error_event(
         source="telegram",
         event="send_message_failed",
-        message="proxy 503",
+        message=(
+            "Telegram sendMessage request failed after 3 attempts: "
+            "HTTPSConnectionPool(host='api.telegram.org', port=443): "
+            "Max retries exceeded with url: /bot<bot_token>/sendMessage "
+            "(Caused by ProxyError('Unable to connect to proxy', "
+            "OSError('Tunnel connection failed: 503 Service Unavailable')))"
+        ),
         created_at="2026-07-05T20:00:00+00:00",
     )
     repository.record_cron_run(
@@ -966,8 +1018,11 @@ def test_admin_errors_reports_error_events_and_failed_cron(tmp_path: Path) -> No
     assert result["command"] == "/kvizi_errors"
     text = telegram.sent_messages[-1]["text"]
     assert "Последние ошибки Квизи:" in text
-    assert "События:" in text
-    assert "05.07.2026 23:00:00 MSK | telegram/send_message_failed: proxy 503" in text
+    assert "Сводка: transient Telegram/proxy=1, прочие events=0, failed cron=1" in text
+    assert "Временные Telegram/proxy:" in text
+    assert "05.07.2026 23:00:00 MSK | telegram/send_message_failed: временный Telegram/proxy сбой (503, proxy, after retries)" in text
+    assert "HTTPSConnectionPool" not in text
+    assert "/bot" not in text
     assert "Cron:" in text
     assert "05.07.2026 23:10:01 MSK | backup_failed: bot can't initiate conversation" in text
 

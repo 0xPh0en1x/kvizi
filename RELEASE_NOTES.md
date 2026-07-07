@@ -29,6 +29,7 @@
 - Sharper persona copy variants for poll titles, announcements, bets, score events, and daily summaries: more irony, uneven rhythm, and theatrical Kvizi flavor.
 - Admin voice smoke command `/kvizi_voice_preview` for checking current Kvizi copy without posting polls or changing scores.
 - Public `/kvizi_help`, grouped `/kvizi_help_admin`, and `/kvizi_prod_check` for quick production readiness checks.
+- Compact `/kvizi_errors` output and transient Telegram/proxy classification so temporary 503/proxy failures do not turn prod-check into WARN.
 
 ### Question operations
 
@@ -49,7 +50,7 @@
 Last local verification:
 
 ```text
-python -m pytest -q -> 67 passed
+python -m pytest -q -> 68 passed
 python scripts/validate_questions.py -> OK, warnings expected for sample CSV
 python scripts/smoke_check.py -> failures=0, warnings expected locally
 ```

@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 import random
+import re
 import shutil
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
@@ -23,6 +24,19 @@ from kvizi.telegram import TelegramApiError, TelegramClient
 
 MAX_QUESTIONS_UPLOAD_BYTES = 2_000_000
 PROD_CHECK_RECENT_HOURS = 36
+TRANSIENT_TELEGRAM_ERROR_MARKERS = (
+    "503 service unavailable",
+    "unable to connect to proxy",
+    "tunnel connection failed",
+    "max retries exceeded",
+    "httpsconnectionpool(host='api.telegram.org'",
+    "proxy 503",
+    "read timed out",
+    "connecttimeout",
+    "connection reset by peer",
+    "remote end closed connection",
+    "temporary failure in name resolution",
+)
 
 
 @dataclass(frozen=True)
@@ -1009,10 +1023,18 @@ class KviziService:
             for event in self.repository.recent_error_events(limit=3)
             if self._is_recent_iso(str(event["created_at"]), now, PROD_CHECK_RECENT_HOURS)
         ]
+        transient_errors = [
+            event for event in recent_errors if self._is_transient_error_event(event)
+        ]
+        actionable_errors = [
+            event for event in recent_errors if not self._is_transient_error_event(event)
+        ]
         if recent_failed:
             add("WARN", f"свежие failed cron: {len(recent_failed)}; смотри /kvizi_errors")
-        if recent_errors:
-            add("WARN", f"свежие error events: {len(recent_errors)}; смотри /kvizi_errors")
+        if actionable_errors:
+            add("WARN", f"свежие error events: {len(actionable_errors)}; смотри /kvizi_errors")
+        if transient_errors:
+            add("INFO", f"transient Telegram/proxy events: {len(transient_errors)}; смотри /kvizi_errors")
         if not recent_failed and not recent_errors:
             add("OK", "свежих ошибок в журнале нет")
 
@@ -1118,12 +1140,35 @@ class KviziService:
             lines.append("- ошибок нет")
             return "\n".join(lines)
 
-        if events:
-            lines.append("События:")
-            for event in events:
+        transient_events = [
+            event for event in events if self._is_transient_error_event(event)
+        ]
+        actionable_events = [
+            event for event in events if not self._is_transient_error_event(event)
+        ]
+        lines.append(
+            "Сводка: "
+            f"transient Telegram/proxy={len(transient_events)}, "
+            f"прочие events={len(actionable_events)}, "
+            f"failed cron={len(failed_cron)}"
+        )
+
+        if actionable_events:
+            lines.append("Требуют внимания:")
+            for event in actionable_events[:5]:
                 lines.append(
                     f"- {self._short_dt(str(event['created_at']))} | "
-                    f"{event['source']}/{event['event']}: {event['message']}"
+                    f"{event['source']}/{event['event']}: "
+                    f"{self._compact_error_message(str(event['message']))}"
+                )
+
+        if transient_events:
+            lines.append("Временные Telegram/proxy:")
+            for event in transient_events[:5]:
+                lines.append(
+                    f"- {self._short_dt(str(event['created_at']))} | "
+                    f"{event['source']}/{event['event']}: "
+                    f"{self._compact_error_message(str(event['message']))}"
                 )
 
         if failed_cron:
@@ -1131,10 +1176,42 @@ class KviziService:
             for run in failed_cron:
                 lines.append(
                     f"- {self._short_dt(str(run['finished_at']))} | "
-                    f"{run['status']}: {run['message']}"
+                    f"{run['status']}: {self._compact_error_message(str(run['message']))}"
                 )
 
         return "\n".join(lines)
+
+    def _is_transient_error_event(self, event: dict[str, Any]) -> bool:
+        source = str(event.get("source") or "").lower()
+        message = str(event.get("message") or "")
+        return source == "telegram" and self._looks_like_transient_telegram_error(message)
+
+    def _looks_like_transient_telegram_error(self, message: str) -> bool:
+        lower_message = message.lower()
+        return any(marker in lower_message for marker in TRANSIENT_TELEGRAM_ERROR_MARKERS)
+
+    def _compact_error_message(self, message: str, limit: int = 160) -> str:
+        text = " ".join(message.strip().split())
+        if self._looks_like_transient_telegram_error(text):
+            details: list[str] = []
+            lower_text = text.lower()
+            if "503" in lower_text:
+                details.append("503")
+            if "proxy" in lower_text:
+                details.append("proxy")
+            if "max retries" in lower_text:
+                details.append("after retries")
+            if "timed out" in lower_text or "timeout" in lower_text:
+                details.append("timeout")
+            detail_text = ", ".join(dict.fromkeys(details)) or "network"
+            return f"временный Telegram/proxy сбой ({detail_text})"
+
+        text = re.sub(r"/bot[^/\s]+/", "/bot<token>/", text)
+        text = re.sub(r"https?://\S+", "<url>", text)
+        text = re.sub(r"\s+", " ", text).strip()
+        if len(text) > limit:
+            return text[: limit - 3].rstrip() + "..."
+        return text
 
     def _format_question_review(self) -> str:
         stats = self.repository.question_answer_stats()
