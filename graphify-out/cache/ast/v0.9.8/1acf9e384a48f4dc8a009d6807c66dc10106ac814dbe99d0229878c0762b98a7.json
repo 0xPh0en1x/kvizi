@@ -1,1 +1,0 @@
-{"nodes": [{"id": "d_dev_durka_kvizi_wsgi_py", "label": "wsgi.py", "file_type": "code", "source_file": "wsgi.py", "source_location": "L1"}], "edges": [{"source": "d_dev_durka_kvizi_wsgi_py", "target": "app", "relation": "imports_from", "context": "import", "confidence": "EXTRACTED", "source_file": "wsgi.py", "source_location": "L1", "weight": 1.0}], "raw_calls": []}

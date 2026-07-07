@@ -7,4 +7,5 @@ instance/
 data/
 exports/
 backups/
+graphify-out/
 .env
