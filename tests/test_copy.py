@@ -90,6 +90,10 @@ def test_persona_templates_stay_telegram_friendly_and_characterful() -> None:
             template.format(new_name="@neo", old_name="@ada", points=101)
             for template in copy.SEASON_LEADER_CHANGE_TEMPLATES
         ),
+        *(
+            template.format(name="@neo", streak=5, bonus=7, points=88)
+            for template in copy.STREAK_MILESTONE_TEMPLATES
+        ),
         *copy.NO_SEASON_LEADER_TEMPLATES,
     ]
 
@@ -136,3 +140,16 @@ def test_season_leader_change_mentions_old_and_new_leaders() -> None:
     assert all("@neo" in variant for variant in variants)
     assert all("@ada" in variant for variant in variants)
     assert all("101" in variant for variant in variants)
+
+
+def test_streak_milestone_mentions_streak_bonus_and_points() -> None:
+    variants = {
+        copy.streak_milestone("@neo", 5, 7, 88, _pick(index))
+        for index in range(len(copy.STREAK_MILESTONE_TEMPLATES))
+    }
+
+    assert len(variants) >= 3
+    assert all("@neo" in variant for variant in variants)
+    assert all("5" in variant for variant in variants)
+    assert all("+7" in variant for variant in variants)
+    assert all("88" in variant for variant in variants)

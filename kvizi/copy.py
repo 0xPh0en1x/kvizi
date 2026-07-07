@@ -308,6 +308,14 @@ SEASON_LEADER_CHANGE_TEMPLATES = (
     "Внимание, табло щёлкнуло слишком довольно: {new_name} стал лидером сезона с {points}. {old_name}, держим лицо. Оно полезно.",
 )
 
+STREAK_MILESTONE_TEMPLATES = (
+    "{name} держит серию {streak}! +{bonus}. Табло нервно поправило невидимый галстук. Всего {points}.",
+    "Та-даа! {name}: {streak} верных подряд, бонус +{bonus}. Квизи делает вид, что ожидал именно это. Всего {points}.",
+    "Серия {streak} у {name}. +{bonus}. Пиксели выстроились в овацию, строго по инструкции. Всего {points}.",
+    "Click-click! {name} собрал серию {streak}. Бонус +{bonus}; бухгалтерия вздохнула и согласилась. Всего {points}.",
+    "Прожектор зафиксировал: {name}, серия {streak}, +{bonus}. Это уже похоже на привычку. Подозрительно полезную. Всего {points}.",
+)
+
 
 def poll_title(question: str, chooser: Callable[[Sequence[str]], str] | None = None) -> str:
     return _render(POLL_TITLE_TEMPLATES, chooser, question=question)
@@ -420,6 +428,23 @@ def season_leader_change(
         chooser,
         new_name=new_name,
         old_name=old_name,
+        points=points,
+    )
+
+
+def streak_milestone(
+    name: str,
+    streak: int,
+    bonus: int,
+    points: int,
+    chooser: Callable[[Sequence[str]], str] | None = None,
+) -> str:
+    return _render(
+        STREAK_MILESTONE_TEMPLATES,
+        chooser,
+        name=name,
+        streak=streak,
+        bonus=bonus,
         points=points,
     )
 

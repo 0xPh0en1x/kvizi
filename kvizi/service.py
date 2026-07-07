@@ -358,6 +358,7 @@ class KviziService:
                 )
 
         if result.recorded:
+            self._announce_streak_milestone(user, result)
             self._announce_season_leader_change(previous_leader)
 
         return {
@@ -1777,5 +1778,34 @@ class KviziService:
             self.repository.record_error_event(
                 source="telegram",
                 event="leader_announcement_failed",
+                message=str(exc),
+            )
+
+    def _announce_streak_milestone(self, user: dict[str, Any], result: Any) -> None:
+        if int(result.streak_bonus) <= 0:
+            return
+
+        announce_thread_id = self._announce_thread_id()
+        if announce_thread_id is None:
+            return
+
+        name = user.get("first_name") or user.get("username") or user.get("id")
+        try:
+            self.telegram.send_message(
+                chat_id=self.settings.telegram_chat_id,
+                message_thread_id=announce_thread_id,
+                text=copy.streak_milestone(
+                    name=str(name),
+                    streak=int(result.streak),
+                    bonus=int(result.streak_bonus),
+                    points=int(result.points),
+                    chooser=self.rng.choice,
+                ),
+                disable_notification=True,
+            )
+        except TelegramApiError as exc:
+            self.repository.record_error_event(
+                source="telegram",
+                event="streak_announcement_failed",
                 message=str(exc),
             )

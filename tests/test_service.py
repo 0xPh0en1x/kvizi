@@ -256,6 +256,55 @@ def test_poll_answer_announces_new_season_leader_to_announce_topic(tmp_path: Pat
     assert "15" in announcement["text"]
 
 
+def test_poll_answer_announces_streak_milestone_to_announce_topic(tmp_path: Path) -> None:
+    service, repository, telegram = make_service(tmp_path)
+    repository.set_bot_setting("announce_thread_id", "999")
+    _seed_topic_answer(
+        repository,
+        poll_id="neo-first",
+        topic_key="network",
+        user_id=7,
+        username="neo",
+        difficulty="normal",
+    )
+    _seed_topic_answer(
+        repository,
+        poll_id="neo-second",
+        topic_key="network",
+        user_id=7,
+        username="neo",
+        difficulty="normal",
+    )
+
+    posted = service.post_question(difficulty="normal")
+    assert posted.posted is True
+    before_messages = len(telegram.sent_messages)
+
+    answer_result = service.handle_update(
+        {
+            "update_id": 5,
+            "poll_answer": {
+                "poll_id": str(posted.poll_id),
+                "user": {"id": 7, "first_name": "Neo"},
+                "option_ids": [0],
+            },
+        }
+    )
+
+    assert answer_result["recorded"] is True
+    assert answer_result["delta"] == 13
+    assert len(telegram.sent_messages) == before_messages + 2
+    score_message = telegram.sent_messages[-2]
+    announcement = telegram.sent_messages[-1]
+    assert score_message["message_thread_id"] == 101
+    assert announcement["message_thread_id"] == 999
+    assert announcement["disable_notification"] is True
+    assert "Neo" in announcement["text"]
+    assert "3" in announcement["text"]
+    assert "+3" in announcement["text"]
+    assert "33" in announcement["text"]
+
+
 def test_top_command_can_filter_by_topic(tmp_path: Path) -> None:
     service, repository, telegram = make_service(tmp_path)
     _seed_topic_answer(
