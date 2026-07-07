@@ -188,7 +188,7 @@ class KviziService:
     ) -> PostQuestionResult:
         self.close_expired_polls()
         if self.question_bank.count() == 0:
-            return PostQuestionResult(False, copy.no_questions_text())
+            return PostQuestionResult(False, copy.no_questions_text(self.rng.choice))
 
         busy_topic_keys = self.repository.active_poll_topic_keys(utc_now_iso()) if skip_busy_topics else set()
         route = self._select_route(topic_key, excluded_topic_keys=busy_topic_keys)
@@ -250,6 +250,7 @@ class KviziService:
                 route.topic_key,
                 question.difficulty,
                 base_points(question.difficulty, self.settings.difficulty_points),
+                self.rng.choice,
             ),
             topic_key=route.topic_key,
             question_id=question.id,
@@ -371,7 +372,7 @@ class KviziService:
         if not poll_id:
             self.telegram.answer_callback_query(
                 callback_query_id=str(query["id"]),
-                text=copy.bet_rejected("опрос не найден"),
+                text=copy.bet_rejected("опрос не найден", self.rng.choice),
                 show_alert=True,
             )
             return {"ok": True, "bet": False}
@@ -382,9 +383,14 @@ class KviziService:
             stake=stake,
             now_iso=utc_now_iso(),
         )
+        bet_text = (
+            copy.bet_accepted(stake, self.rng.choice)
+            if ok
+            else copy.bet_rejected(reason, self.rng.choice)
+        )
         self.telegram.answer_callback_query(
             callback_query_id=str(query["id"]),
-            text=copy.bet_accepted(stake) if ok else copy.bet_rejected(reason),
+            text=bet_text,
             show_alert=not ok,
         )
         return {"ok": True, "bet": ok, "reason": reason}
@@ -1344,7 +1350,7 @@ class KviziService:
 
     def _format_daily_summary(self, summary_date: str, stats: dict[str, Any]) -> str:
         lines = [
-            f"Итоги дня {self._short_date(summary_date)}:",
+            copy.daily_title(self._short_date(summary_date), self.rng.choice),
             f"Вопросы: {stats['questions_count']}",
             (
                 f"Ответы: {stats['answers_count']} от {stats['participants_count']} участников. "
@@ -1355,7 +1361,7 @@ class KviziService:
         ]
 
         top_players = stats["top_players"]
-        lines.append("Топ дня:")
+        lines.append(copy.daily_top_header(self.rng.choice))
         if top_players:
             for index, row in enumerate(top_players, start=1):
                 lines.append(
@@ -1363,11 +1369,11 @@ class KviziService:
                     f"({row['correct_count']}/{row['answers_count']} верно/ответов)"
                 )
         else:
-            lines.append("- сегодня табло ещё пустое")
+            lines.append(copy.daily_empty_top(self.rng.choice))
 
         challenge_players = stats["challenge_players"]
         if challenge_players:
-            lines.append("Challenge-сцена:")
+            lines.append(copy.daily_challenge_header(self.rng.choice))
             for index, row in enumerate(challenge_players, start=1):
                 lines.append(
                     f"{index}. {self._display_name(row)} — {row['challenge_count']} выз., "
@@ -1376,7 +1382,7 @@ class KviziService:
 
         risky_players = stats["risky_players"]
         if risky_players:
-            lines.append("Риск x2/x3:")
+            lines.append(copy.daily_risk_header(self.rng.choice))
             for index, row in enumerate(risky_players, start=1):
                 lines.append(
                     f"{index}. {self._display_name(row)} — {row['risky_answers']} ставок, "
@@ -1386,9 +1392,15 @@ class KviziService:
         season_top = self.repository.leaderboard(self.settings.season_name, limit=1)
         if season_top:
             leader = season_top[0]
-            lines.append(f"Лидер сезона: {self._display_name(leader)} — {leader['points']}.")
+            lines.append(
+                copy.season_leader_line(
+                    self._display_name(leader),
+                    int(leader["points"]),
+                    self.rng.choice,
+                )
+            )
         else:
-            lines.append("Лидер сезона: пока никто не вырвался вперёд.")
+            lines.append(copy.no_season_leader_line(self.rng.choice))
 
         return "\n".join(lines)
 
@@ -1434,7 +1446,7 @@ class KviziService:
         return name or str(row["user_id"])
 
     def _poll_title(self, question: Question) -> str:
-        title = f"Квизи спрашивает: {question.text}"
+        title = copy.poll_title(question.text, self.rng.choice)
         return title if len(title) <= 300 else question.text[:300]
 
     def _announce_question(self, route: TopicRoute, question: Question, question_link: str | None) -> None:
@@ -1449,6 +1461,7 @@ class KviziService:
                 question.difficulty,
                 question_link,
                 base_points(question.difficulty, self.settings.difficulty_points),
+                self.rng.choice,
             ),
             disable_notification=True,
         )
@@ -1472,11 +1485,13 @@ class KviziService:
 
     def _score_event_text(self, user: dict[str, Any], result: Any) -> str:
         name = user.get("first_name") or user.get("username") or user.get("id")
-        if result.is_challenge:
-            if result.is_correct:
-                return f"{name}: вызов пройден! +{result.delta}. Всего {result.points}."
-            return f"{name}: вызов провален. {result.delta}. Всего {result.points}."
-        if result.is_correct:
-            bonus = f", бонус серии +{result.streak_bonus}" if result.streak_bonus else ""
-            return f"{name}: верно на x{result.stake}! +{result.delta}{bonus}. Всего {result.points}."
-        return f"{name}: риск x{result.stake} щелкнул не туда. {result.delta}. Всего {result.points}."
+        return copy.score_event_text(
+            name=name,
+            is_challenge=bool(result.is_challenge),
+            is_correct=bool(result.is_correct),
+            stake=int(result.stake),
+            delta=int(result.delta),
+            points=int(result.points),
+            streak_bonus=int(result.streak_bonus),
+            chooser=self.rng.choice,
+        )

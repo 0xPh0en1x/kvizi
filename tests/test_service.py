@@ -9,6 +9,7 @@ from io import StringIO
 from pathlib import Path
 from typing import Any
 
+from kvizi import copy
 from kvizi.config import Settings
 from kvizi.database import KviziRepository
 from kvizi.questions import Question, QuestionBank
@@ -136,6 +137,17 @@ def make_service(tmp_path: Path) -> tuple[KviziService, KviziRepository, FakeTel
         question_bank=make_question_bank(),
     )
     return service, repository, telegram
+
+
+def _daily_title_matches(text: str) -> bool:
+    first_line = text.splitlines()[0]
+    return any(
+        re.fullmatch(
+            re.escape(template).replace(r"\{date\}", r"\d{2}\.\d{2}\.\d{4} MSK"),
+            first_line,
+        )
+        for template in copy.DAILY_TITLE_TEMPLATES
+    )
 
 
 def test_database_uses_wal_and_busy_timeout(tmp_path: Path) -> None:
@@ -370,15 +382,14 @@ def test_post_question_sends_announcement_with_private_group_link(tmp_path: Path
 
     assert posted.posted is True
     assert posted.question_link == "https://t.me/c/1/1"
-    assert telegram.sent_messages[-1] == {
-        "chat_id": "-1001",
-        "message_thread_id": 999,
-        "text": (
-            "Квизи выкатывает вопрос в сектор network! Сложность normal, база 10.\n"
-            "https://t.me/c/1/1"
-        ),
-        "disable_notification": True,
-    }
+    announcement = telegram.sent_messages[-1]
+    assert announcement["chat_id"] == "-1001"
+    assert announcement["message_thread_id"] == 999
+    assert announcement["disable_notification"] is True
+    assert "network" in announcement["text"]
+    assert "normal" in announcement["text"]
+    assert "10" in announcement["text"]
+    assert announcement["text"].endswith("\nhttps://t.me/c/1/1")
 
 
 def test_postnow_command_does_not_echo_announcement_in_source_topic(tmp_path: Path) -> None:
@@ -429,7 +440,7 @@ def test_challenge_posts_selected_difficulty_and_rewards_requester(tmp_path: Pat
 
     assert result["posted"] is True
     assert result["difficulty"] == "hard"
-    assert telegram.sent_polls[-1]["question"] == "Квизи спрашивает: Which record maps a name to IPv4?"
+    assert "Which record maps a name to IPv4?" in telegram.sent_polls[-1]["question"]
 
     answer_result = service.handle_update(
         {
@@ -484,7 +495,9 @@ def test_custom_difficulty_scoring_rules_and_challenge_economy(tmp_path: Path) -
 
     posted = service.post_question(difficulty="ccna")
     assert posted.posted is True
-    assert posted.message == "Квизи выкатывает вопрос в сектор network! Сложность ccna, база 20."
+    assert "network" in posted.message
+    assert "ccna" in posted.message
+    assert "20" in posted.message
 
     answer_result = service.handle_update(
         {
@@ -1617,8 +1630,7 @@ def test_admin_daily_posts_summary_to_current_topic(tmp_path: Path) -> None:
     assert result["posted"] is True
     message = telegram.sent_messages[-1]
     assert message["message_thread_id"] == 101
-    first_line = message["text"].splitlines()[0]
-    assert re.fullmatch(r"Итоги дня \d{2}\.\d{2}\.\d{4} MSK:", first_line)
+    assert _daily_title_matches(message["text"])
     assert "Вопросы: 1" in message["text"]
     assert "Ответы: 1 от 1 участников" in message["text"]
     assert "@ada" in message["text"]
@@ -1644,8 +1656,7 @@ def test_cron_daily_posts_once_and_skips_duplicate(tmp_path: Path) -> None:
     assert second.get_json()["posted"] is False
     assert len(telegram.sent_messages) == 1
     assert telegram.sent_messages[0]["message_thread_id"] == 999
-    first_line = telegram.sent_messages[0]["text"].splitlines()[0]
-    assert re.fullmatch(r"Итоги дня \d{2}\.\d{2}\.\d{4} MSK:", first_line)
+    assert _daily_title_matches(telegram.sent_messages[0]["text"])
 
 
 def test_cron_backup_requires_secret_and_sends_json_export_to_admin(tmp_path: Path) -> None:
