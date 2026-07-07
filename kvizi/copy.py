@@ -258,6 +258,22 @@ RISK_FAILURE_X3_TEMPLATES = (
     "Click-click! x{stake} у {name} превратился в ERROR-confetti: {delta}. Всего {points}. Табло просит минуту тишины.",
 )
 
+NO_ANSWERS_CLOSED_TEMPLATES = (
+    "Занавес опустился: {topic_key} {difficulty} закрылся без ответов. Табло кашлянуло пикселями и сделало вид, что так драматичнее.\n{link}",
+    "Вопрос в секторе {topic_key} тихо доехал до финала: {difficulty}, ответов 0. Аппарат записал паузу как художественный выбор.\n{link}",
+    "Click-click. {topic_key} {difficulty}: номер закрыт, участники сохранили загадочное молчание. Прожектор моргнул и ушёл считать тишину.\n{link}",
+    "Квизи фиксирует пустой зал у вопроса {topic_key} {difficulty}. Ноль ответов, зато какая дисциплина у кнопок.\n{link}",
+    "Bzzzt: вопрос {topic_key} {difficulty} закрылся без единого ответа. Табло не плачет. У табло просто интерфейс такой.\n{link}",
+)
+
+FIRST_ANSWER_OF_DAY_TEMPLATES = (
+    "Первый ответ дня: {name} в секторе {topic_key} ({difficulty}). {result_text}, {delta_text}. Всего {points}. Табло проснулось и сразу делает вид, что работало давно.",
+    "Та-даа! День официально щёлкнул: {name} дал первый ответ в {topic_key} ({difficulty}). {result_text}; {delta_text}. Всего {points}. Аппарат доволен подозрительно рано.",
+    "Прожектор нашёл первого смельчака дня: {name}, {topic_key} {difficulty}. {result_text}, {delta_text}. Всего {points}. Квизи записал это крупным цифровым почерком.",
+    "Click-click: первый ответ дня доставлен. {name} открыл счётчик в {topic_key} ({difficulty}); {result_text}, {delta_text}. Всего {points}. Кнопки перестали притворяться спящими.",
+    "Утренний протокол, даже если уже не утро: {name} первым ответил в {topic_key} ({difficulty}). {result_text}, {delta_text}. Всего {points}.",
+)
+
 DAILY_TITLE_TEMPLATES = (
     "Итоги дня {date}:",
     "Занавес дня {date}: цифры выстроились и делают вид, что им не страшно:",
@@ -411,6 +427,44 @@ def risk_failure(
 ) -> str:
     variants = RISK_FAILURE_X3_TEMPLATES if stake >= 3 else RISK_FAILURE_X2_TEMPLATES
     return _render(variants, chooser, name=name, stake=stake, delta=delta, points=points)
+
+
+def no_answers_closed(
+    topic_key: str,
+    difficulty: str,
+    link: str,
+    chooser: Callable[[Sequence[str]], str] | None = None,
+) -> str:
+    return _render(
+        NO_ANSWERS_CLOSED_TEMPLATES,
+        chooser,
+        topic_key=topic_key,
+        difficulty=difficulty,
+        link=link,
+    )
+
+
+def first_answer_of_day(
+    name: str,
+    topic_key: str,
+    difficulty: str,
+    is_correct: bool,
+    delta: int,
+    points: int,
+    chooser: Callable[[Sequence[str]], str] | None = None,
+) -> str:
+    result_text = "верно" if is_correct else "мимо"
+    delta_text = f"+{delta}" if delta > 0 else str(delta)
+    return _render(
+        FIRST_ANSWER_OF_DAY_TEMPLATES,
+        chooser,
+        name=name,
+        topic_key=topic_key,
+        difficulty=difficulty,
+        result_text=result_text,
+        delta_text=delta_text,
+        points=points,
+    )
 
 
 def daily_title(date: str, chooser: Callable[[Sequence[str]], str] | None = None) -> str:

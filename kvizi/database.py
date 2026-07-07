@@ -321,6 +321,33 @@ class KviziRepository:
                 (utc_now_iso(), poll_id),
             )
 
+    def human_answer_count_for_poll(self, poll_id: str) -> int:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM answers
+                WHERE poll_id = ?
+                  AND selected_option_ids <> ''
+                """,
+                (poll_id,),
+            ).fetchone()
+        return int(row["count"]) if row is not None else 0
+
+    def human_answer_count_between(self, start_iso: str, end_iso: str) -> int:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM answers
+                WHERE answered_at >= ?
+                  AND answered_at < ?
+                  AND selected_option_ids <> ''
+                """,
+                (start_iso, end_iso),
+            ).fetchone()
+        return int(row["count"]) if row is not None else 0
+
     def record_bet(self, poll_id: str, user_id: int, stake: int, now_iso: str) -> tuple[bool, str]:
         poll = self.get_poll(poll_id)
         if poll is None:

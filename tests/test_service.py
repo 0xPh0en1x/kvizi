@@ -219,6 +219,7 @@ def test_post_bet_answer_updates_score_and_is_idempotent(tmp_path: Path) -> None
 def test_poll_answer_announces_new_season_leader_to_announce_topic(tmp_path: Path) -> None:
     service, repository, telegram = make_service(tmp_path)
     repository.set_bot_setting("announce_thread_id", "999")
+    _seed_today_answer(repository, user_id=900, username="seed", points_difficulty="easy")
     _seed_topic_answer(
         repository,
         poll_id="old-leader",
@@ -259,6 +260,7 @@ def test_poll_answer_announces_new_season_leader_to_announce_topic(tmp_path: Pat
 def test_poll_answer_announces_streak_milestone_to_announce_topic(tmp_path: Path) -> None:
     service, repository, telegram = make_service(tmp_path)
     repository.set_bot_setting("announce_thread_id", "999")
+    _seed_today_answer(repository, user_id=900, username="seed", points_difficulty="easy")
     _seed_topic_answer(
         repository,
         poll_id="neo-first",
@@ -311,6 +313,7 @@ def test_poll_answer_announces_x2_and_x3_risk_failures_to_announce_topic(tmp_pat
         case_dir.mkdir()
         service, repository, telegram = make_service(case_dir)
         repository.set_bot_setting("announce_thread_id", "999")
+        _seed_today_answer(repository, user_id=900 + stake, username=f"seed{stake}", points_difficulty="easy")
 
         posted = service.post_question(difficulty="normal")
         assert posted.posted is True
@@ -352,6 +355,67 @@ def test_poll_answer_announces_x2_and_x3_risk_failures_to_announce_topic(tmp_pat
         assert f"x{stake}" in announcement["text"]
         assert str(expected_delta) in announcement["text"]
         assert str(answer_result["points"]) in announcement["text"]
+
+
+def test_poll_answer_announces_first_answer_of_day_to_announce_topic(tmp_path: Path) -> None:
+    service, repository, telegram = make_service(tmp_path)
+    repository.set_bot_setting("announce_thread_id", "999")
+
+    posted = service.post_question(difficulty="normal")
+    assert posted.posted is True
+    before_messages = len(telegram.sent_messages)
+
+    answer_result = service.handle_update(
+        {
+            "update_id": 31,
+            "poll_answer": {
+                "poll_id": str(posted.poll_id),
+                "user": {"id": 7, "first_name": "Neo"},
+                "option_ids": [0],
+            },
+        }
+    )
+
+    assert answer_result["recorded"] is True
+    assert len(telegram.sent_messages) == before_messages + 1
+    announcement = telegram.sent_messages[-1]
+    assert announcement["message_thread_id"] == 999
+    assert announcement["disable_notification"] is True
+    assert "Neo" in announcement["text"]
+    assert "network" in announcement["text"]
+    assert "normal" in announcement["text"]
+    assert "+10" in announcement["text"]
+    assert "10" in announcement["text"]
+
+
+def test_close_expired_poll_announces_no_answers_to_announce_topic(tmp_path: Path) -> None:
+    service, repository, telegram = make_service(tmp_path)
+    repository.set_bot_setting("announce_thread_id", "999")
+    repository.create_poll(
+        poll_id="expired-empty",
+        telegram_message_id=321,
+        question_id="q1",
+        topic_key="network",
+        message_thread_id=101,
+        correct_option_id=0,
+        difficulty="normal",
+        opened_at="1999-01-01T00:00:00+00:00",
+        closes_at="2000-01-01T00:00:00+00:00",
+        explanation="",
+    )
+
+    closed = service.close_expired_polls()
+
+    assert closed == 1
+    assert telegram.stopped_polls == [{"chat_id": "-1001", "message_id": 321}]
+    assert repository.get_poll("expired-empty")["status"] == "closed"
+    assert len(telegram.sent_messages) == 1
+    announcement = telegram.sent_messages[-1]
+    assert announcement["message_thread_id"] == 999
+    assert announcement["disable_notification"] is True
+    assert "network" in announcement["text"]
+    assert "normal" in announcement["text"]
+    assert "https://t.me/c/1/321" in announcement["text"]
 
 
 def test_top_command_can_filter_by_topic(tmp_path: Path) -> None:

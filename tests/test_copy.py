@@ -88,6 +88,21 @@ def test_persona_templates_stay_telegram_friendly_and_characterful() -> None:
             template.format(name="Ada", stake=3, delta=-20, points=8)
             for template in copy.RISK_FAILURE_X3_TEMPLATES
         ),
+        *(
+            template.format(topic_key="network", difficulty="normal", link="https://t.me/c/1/42")
+            for template in copy.NO_ANSWERS_CLOSED_TEMPLATES
+        ),
+        *(
+            template.format(
+                name="Ada",
+                topic_key="network",
+                difficulty="normal",
+                result_text="верно",
+                delta_text="+10",
+                points=10,
+            )
+            for template in copy.FIRST_ANSWER_OF_DAY_TEMPLATES
+        ),
         *(template.format(date="07.07.2026 MSK") for template in copy.DAILY_TITLE_TEMPLATES),
         *copy.DAILY_TOP_HEADERS,
         *copy.DAILY_EMPTY_TOP_LINES,
@@ -182,3 +197,21 @@ def test_risk_failure_mentions_stake_delta_and_points() -> None:
     assert all("-20" in variant for variant in x3_variants)
     assert all("18" in variant for variant in x2_variants)
     assert all("8" in variant for variant in x3_variants)
+
+
+def test_live_announcement_templates_include_context() -> None:
+    no_answer_variants = {
+        copy.no_answers_closed("network", "normal", "https://t.me/c/1/42", _pick(index))
+        for index in range(len(copy.NO_ANSWERS_CLOSED_TEMPLATES))
+    }
+    first_answer_variants = {
+        copy.first_answer_of_day("Ada", "network", "normal", True, 10, 10, _pick(index))
+        for index in range(len(copy.FIRST_ANSWER_OF_DAY_TEMPLATES))
+    }
+
+    assert all("network" in variant for variant in no_answer_variants | first_answer_variants)
+    assert all("normal" in variant for variant in no_answer_variants | first_answer_variants)
+    assert all("https://t.me/c/1/42" in variant for variant in no_answer_variants)
+    assert all("Ada" in variant for variant in first_answer_variants)
+    assert all("+10" in variant for variant in first_answer_variants)
+    assert all("10" in variant for variant in first_answer_variants)
