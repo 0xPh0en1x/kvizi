@@ -4,10 +4,13 @@ Use this after every deploy, pull, env change, or cron schedule change on Python
 
 ## 1. Pull Code
 
+First confirm that the latest commit has a green `CI` workflow in GitHub Actions.
+
 ```bash
 cd ~/kvizi
 git pull
 source .venv/bin/activate
+python -m pip install -r requirements.txt
 python scripts/validate_questions.py
 python scripts/smoke_check.py
 ```
@@ -16,7 +19,10 @@ Expected:
 
 - `validate_questions.py` reports `Questions OK`.
 - `smoke_check.py` reports `failures=0`.
-- Warnings are acceptable only if they match the current deploy state and are understood.
+- If env vars are available in the Bash console, additionally run
+  `python scripts/smoke_check.py --strict-env` and expect `failures=0`.
+- If env vars exist only in the WSGI file, missing-env warnings in the Bash smoke
+  check are expected; `/health` after reload is the authoritative readiness check.
 
 ## 2. Reload PythonAnywhere
 
@@ -29,10 +35,10 @@ In PythonAnywhere Web tab:
 Expected `/health`:
 
 ```json
-{"ok":true,"questions":75}
+{"configuration_ok":true,"ok":true,"questions":75,"questions_loaded":true}
 ```
 
-The exact database path may differ, but it must point to the intended app data path.
+Any missing runtime setting, question-load failure, or empty question bank returns HTTP 503.
 
 ## 3. Telegram Smoke
 

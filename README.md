@@ -33,6 +33,15 @@ python scripts/smoke_check.py
 
 Предрелизный список возможностей: `RELEASE_NOTES.md`.
 
+## Проверка через GitHub
+
+Workflow `.github/workflows/ci.yml` автоматически запускается на каждый push и
+pull request. Он проверяет проект на Python 3.10 и 3.13: устанавливает зависимости,
+валидирует `questions.csv`, компилирует исходники и выполняет полный набор тестов.
+
+Если локально тесты не запускаются, перед `git pull` на PythonAnywhere дождись
+зелёного статуса workflow `CI` в GitHub Actions.
+
 Минимальные переменные окружения для реального запуска:
 
 ```powershell

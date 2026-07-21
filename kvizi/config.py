@@ -59,10 +59,10 @@ class Settings:
 
 def load_settings() -> Settings:
     return Settings(
-        telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
-        telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", ""),
-        webhook_secret=os.getenv("KVIZI_WEBHOOK_SECRET", "dev-webhook-secret"),
-        cron_secret=os.getenv("KVIZI_CRON_SECRET", "dev-cron-secret"),
+        telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),
+        telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", "").strip(),
+        webhook_secret=os.getenv("KVIZI_WEBHOOK_SECRET", "").strip(),
+        cron_secret=os.getenv("KVIZI_CRON_SECRET", "").strip(),
         admin_ids=_parse_admin_ids(os.getenv("KVIZI_ADMIN_IDS", "")),
         timezone_name=os.getenv("KVIZI_TZ", "Europe/Moscow"),
         open_seconds=int(os.getenv("KVIZI_OPEN_SECONDS", "7200")),

@@ -32,6 +32,8 @@ def main() -> None:
     settings = load_settings()
     if not settings.telegram_bot_token:
         raise SystemExit("TELEGRAM_BOT_TOKEN is required")
+    if not settings.webhook_secret:
+        raise SystemExit("KVIZI_WEBHOOK_SECRET is required")
 
     url = args.base_url.rstrip("/") + f"/telegram/{settings.webhook_secret}"
     client = TelegramClient(settings.telegram_bot_token)

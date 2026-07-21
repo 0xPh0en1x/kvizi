@@ -9,7 +9,9 @@ import requests
 
 
 class TelegramApiError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, ambiguous: bool = False) -> None:
+        super().__init__(message)
+        self.ambiguous = ambiguous
 
 
 RETRY_STATUS_CODES = {500, 502, 503, 504}
@@ -80,10 +82,10 @@ class TelegramClient:
         payload: dict[str, Any] = {
             "chat_id": chat_id,
             "question": question,
-            "options": options,
+            "options": [{"text": option} for option in options],
             "type": "quiz",
             "is_anonymous": False,
-            "correct_option_id": correct_option_id,
+            "correct_option_ids": [correct_option_id],
             "allows_multiple_answers": False,
             "reply_markup": reply_markup,
         }
@@ -113,7 +115,7 @@ class TelegramClient:
         )
 
     def download_file(self, file_id: str) -> bytes:
-        file_info = self._request("getFile", {"file_id": file_id})
+        file_info = self._request("getFile", {"file_id": file_id}, retry=True)
         file_path = str((file_info.get("result") or {}).get("file_path") or "")
         if not file_path:
             raise TelegramApiError("Telegram getFile returned no file_path")
@@ -139,9 +141,16 @@ class TelegramClient:
                 "allowed_updates": allowed_updates,
                 "drop_pending_updates": drop_pending_updates,
             },
+            retry=True,
         )
 
-    def _request(self, method: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def _request(
+        self,
+        method: str,
+        payload: dict[str, Any],
+        *,
+        retry: bool = False,
+    ) -> dict[str, Any]:
         if not self.bot_token:
             raise TelegramApiError("TELEGRAM_BOT_TOKEN is not configured")
 
@@ -152,6 +161,7 @@ class TelegramClient:
                 json=payload,
                 timeout=self.timeout_seconds,
             ),
+            retry=retry,
         )
 
     def _request_multipart(
@@ -172,6 +182,7 @@ class TelegramClient:
                 timeout=self.timeout_seconds,
             ),
             before_attempt=lambda: self._rewind_files(files),
+            retry=False,
         )
 
     def _request_with_retries(
@@ -179,36 +190,48 @@ class TelegramClient:
         method: str,
         send_request: Callable[[], requests.Response],
         before_attempt: Callable[[], None] | None = None,
+        *,
+        retry: bool,
     ) -> dict[str, Any]:
-        for attempt in range(1, self.max_retries + 1):
+        max_attempts = self.max_retries if retry else 1
+        for attempt in range(1, max_attempts + 1):
             if before_attempt is not None:
                 before_attempt()
             try:
                 response = send_request()
             except requests.RequestException as exc:
-                if self._can_retry(attempt):
+                if attempt < max_attempts:
                     self._sleep_before_retry(attempt)
                     continue
                 raise TelegramApiError(
                     f"Telegram {method} request failed after {attempt} attempts: "
-                    f"{self._sanitize_error(exc)}"
+                    f"{self._sanitize_error(exc)}",
+                    ambiguous=True,
                 ) from exc
 
             try:
                 data = response.json()
             except ValueError as exc:
-                if response.status_code in RETRY_STATUS_CODES and self._can_retry(attempt):
+                if response.status_code in RETRY_STATUS_CODES and attempt < max_attempts:
                     self._sleep_before_retry(attempt)
                     continue
-                raise TelegramApiError(f"Telegram {method} returned non-JSON response") from exc
+                raise TelegramApiError(
+                    f"Telegram {method} returned non-JSON response",
+                    # A malformed response cannot prove that Telegram did not
+                    # perform a non-idempotent send.
+                    ambiguous=True,
+                ) from exc
 
-            if response.status_code in RETRY_STATUS_CODES and self._can_retry(attempt):
+            if response.status_code in RETRY_STATUS_CODES and attempt < max_attempts:
                 self._sleep_before_retry(attempt)
                 continue
 
             if response.status_code >= 400 or not data.get("ok"):
                 description = data.get("description") or response.text
-                raise TelegramApiError(f"Telegram {method} failed: {self._sanitize_error(description)}")
+                raise TelegramApiError(
+                    f"Telegram {method} failed: {self._sanitize_error(description)}",
+                    ambiguous=response.status_code in RETRY_STATUS_CODES,
+                )
             return data
 
         raise TelegramApiError(f"Telegram {method} request failed")

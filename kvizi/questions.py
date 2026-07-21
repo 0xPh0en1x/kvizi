@@ -23,6 +23,10 @@ QUESTION_COLUMNS = [
 ]
 
 DIFFICULTY_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
+MAX_QUESTION_LENGTH = 300
+MAX_OPTION_LENGTH = 100
+MAX_EXPLANATION_LENGTH = 200
+MAX_EXPLANATION_LINE_FEEDS = 2
 
 
 class QuestionValidationError(ValueError):
@@ -107,6 +111,10 @@ def _parse_row(row: dict[str, str], line_number: int, seen_ids: set[str]) -> Que
         )
 
     text = _required(row, "question", line_number).strip()
+    if len(text) > MAX_QUESTION_LENGTH:
+        raise QuestionValidationError(
+            f"Line {line_number}: question exceeds Telegram limit of {MAX_QUESTION_LENGTH} characters"
+        )
     options = tuple(
         value.strip()
         for value in [row.get(f"option_{index}", "") for index in range(1, 7)]
@@ -116,6 +124,12 @@ def _parse_row(row: dict[str, str], line_number: int, seen_ids: set[str]) -> Que
         raise QuestionValidationError(f"Line {line_number}: at least two options are required")
     if len(options) > 10:
         raise QuestionValidationError(f"Line {line_number}: Telegram supports at most ten options")
+    for option_index, option in enumerate(options, start=1):
+        if len(option) > MAX_OPTION_LENGTH:
+            raise QuestionValidationError(
+                f"Line {line_number}: option_{option_index} exceeds Telegram limit of "
+                f"{MAX_OPTION_LENGTH} characters"
+            )
 
     correct_raw = _required(row, "correct_option_ids", line_number)
     correct_values = [item.strip() for item in correct_raw.replace(";", ",").split(",") if item.strip()]
@@ -135,6 +149,18 @@ def _parse_row(row: dict[str, str], line_number: int, seen_ids: set[str]) -> Que
             f"Line {line_number}: correct option must be from 1 to {len(options)}"
         )
 
+    explanation = (row.get("explanation") or "").strip()
+    if len(explanation) > MAX_EXPLANATION_LENGTH:
+        raise QuestionValidationError(
+            f"Line {line_number}: explanation exceeds Telegram limit of "
+            f"{MAX_EXPLANATION_LENGTH} characters"
+        )
+    if explanation.count("\n") > MAX_EXPLANATION_LINE_FEEDS:
+        raise QuestionValidationError(
+            f"Line {line_number}: explanation exceeds Telegram limit of "
+            f"{MAX_EXPLANATION_LINE_FEEDS} line feeds"
+        )
+
     return Question(
         id=question_id,
         topic_key=topic_key,
@@ -142,7 +168,7 @@ def _parse_row(row: dict[str, str], line_number: int, seen_ids: set[str]) -> Que
         text=text,
         options=options,
         correct_option_id=correct_human_index - 1,
-        explanation=(row.get("explanation") or "").strip(),
+        explanation=explanation,
         source=(row.get("source") or "").strip(),
     )
 

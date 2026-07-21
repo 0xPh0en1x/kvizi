@@ -3,7 +3,19 @@
 Короткий чеклист для первого запуска на PythonAnywhere. Команды выполнять из
 корня проекта.
 
-## 1. Локальная проверка
+## 1. Проверка в GitHub Actions
+
+На каждый push и pull request workflow `CI` проверяет Python 3.10 и 3.13:
+
+- зависимости через `pip check`;
+- `questions.csv`;
+- компиляцию Python-файлов;
+- полный `python -m pytest -q`.
+
+Перед обновлением PythonAnywhere дождись зелёного статуса `CI` в GitHub. Секреты
+Telegram для этого workflow не нужны.
+
+Локально те же проверки при необходимости запускаются так:
 
 ```bash
 python -m pytest -q
@@ -19,7 +31,8 @@ python scripts/smoke_check.py --strict-env
 
 ## 2. Переменные окружения
 
-Скопировать `.env.example` как рабочий шаблон и заполнить реальные значения:
+Использовать `.env.example` как список нужных значений. Сам файл `.env`
+приложение автоматически не загружает:
 
 ```text
 TELEGRAM_BOT_TOKEN=...
@@ -77,7 +90,7 @@ from wsgi import application
 cd /home/YOUR_USERNAME/kvizi
 python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
 
 3. In PythonAnywhere Web tab:
@@ -91,8 +104,18 @@ pip install -r requirements.txt
 ```bash
 python scripts/init_db.py
 python scripts/validate_questions.py
+python scripts/smoke_check.py
+```
+
+Если production-переменные экспортированы и в Bash-консоль, можно усилить проверку:
+
+```bash
 python scripts/smoke_check.py --strict-env
 ```
+
+Если они заданы только внутри PythonAnywhere WSGI-файла, предупреждения консольного
+smoke-check об отсутствующих переменных ожидаемы. Фактическую конфигурацию в этом
+случае проверяет `/health` после reload.
 
 5. Reload the web app.
 6. Open:
@@ -101,7 +124,9 @@ python scripts/smoke_check.py --strict-env
 https://YOUR_USERNAME.pythonanywhere.com/health
 ```
 
-It should return JSON with `"ok": true` and empty `load_error`.
+It should return HTTP 200 with `"ok": true`, `"configuration_ok": true` and
+`"questions_loaded": true`. Missing runtime settings or a broken/empty question bank
+return HTTP 503.
 
 ## 4. Telegram setup
 

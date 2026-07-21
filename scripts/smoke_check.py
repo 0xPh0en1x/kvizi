@@ -58,7 +58,7 @@ def main() -> None:
     check_environment(settings, report, strict=args.strict_env)
     check_questions(settings, report)
     check_database(settings, report)
-    check_flask_routes(settings, report)
+    check_flask_routes(settings, report, strict=args.strict_env)
 
     print(f"Smoke check finished: failures={report.failures}, warnings={report.warnings}")
     if report.failures:
@@ -151,7 +151,7 @@ def check_database(settings: Settings, report: SmokeReport) -> None:
         report.fail("SQLite foreign_keys disabled")
 
 
-def check_flask_routes(settings: Settings, report: SmokeReport) -> None:
+def check_flask_routes(settings: Settings, report: SmokeReport, *, strict: bool) -> None:
     try:
         app = create_app(settings=settings)
         client = app.test_client()
@@ -160,15 +160,21 @@ def check_flask_routes(settings: Settings, report: SmokeReport) -> None:
         report.fail(f"Flask app creation or /health failed: {exc}")
         return
 
-    if health.status_code != 200:
-        report.fail(f"/health returned {health.status_code}")
-        return
-
     payload = health.get_json(silent=True) or {}
-    if payload.get("ok") is True and not payload.get("load_error"):
+    if (
+        health.status_code == 200
+        and payload.get("ok") is True
+        and payload.get("questions_loaded") is True
+    ):
         report.ok(f"/health ok, questions={payload.get('questions')}")
+    elif (
+        health.status_code == 503
+        and payload.get("configuration_ok") is False
+        and payload.get("questions_loaded") is True
+    ):
+        _warn_or_fail(report, strict, "/health is not ready because deploy config is incomplete")
     else:
-        report.fail(f"/health payload not healthy: {payload}")
+        report.fail(f"/health returned {health.status_code}: {payload}")
 
     for endpoint in ("/cron/tick", "/cron/maintenance", "/cron/daily", "/cron/backup"):
         response = client.post(endpoint)
@@ -177,8 +183,10 @@ def check_flask_routes(settings: Settings, report: SmokeReport) -> None:
         else:
             report.fail(f"{endpoint} returned {response.status_code} without cron secret")
 
-    webhook = client.post(f"/telegram/{settings.webhook_secret}", json={})
-    if webhook.status_code == 403:
+    webhook_path = f"/telegram/{settings.webhook_secret}" if settings.webhook_secret else "/telegram/"
+    webhook = client.post(webhook_path, json={})
+    expected_webhook_status = 403 if settings.webhook_secret else 404
+    if webhook.status_code == expected_webhook_status:
         report.ok("/telegram/<secret> rejects missing Telegram secret token")
     else:
         report.fail(f"/telegram/<secret> returned {webhook.status_code} without secret token")

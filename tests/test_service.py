@@ -3,15 +3,19 @@ from __future__ import annotations
 import csv
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from io import StringIO
 from pathlib import Path
+from threading import Event
 from typing import Any
+
+import pytest
 
 from kvizi import copy
 from kvizi.config import Settings
-from kvizi.database import KviziRepository
+from kvizi.database import KviziRepository, utc_now_iso
 from kvizi.questions import Question, QuestionBank
 from kvizi.service import KviziService
 from kvizi.telegram import TelegramApiError
@@ -72,6 +76,32 @@ class FailDocumentForChatTelegram(FakeTelegram):
         if str(payload["chat_id"]) == self.failed_chat_id:
             raise TelegramApiError("bot can't initiate conversation")
         return super().send_document(**payload)
+
+
+class BlockingSendPollTelegram(FakeTelegram):
+    def __init__(self) -> None:
+        super().__init__()
+        self.entered = Event()
+        self.release = Event()
+
+    def send_poll(self, **payload: Any) -> dict[str, Any]:
+        self.entered.set()
+        if not self.release.wait(timeout=5):
+            raise TimeoutError("test did not release send_poll")
+        return super().send_poll(**payload)
+
+
+class BlockingSendMessageTelegram(FakeTelegram):
+    def __init__(self) -> None:
+        super().__init__()
+        self.entered = Event()
+        self.release = Event()
+
+    def send_message(self, **payload: Any) -> dict[str, Any]:
+        self.entered.set()
+        if not self.release.wait(timeout=5):
+            raise TimeoutError("test did not release send_message")
+        return super().send_message(**payload)
 
 
 def make_settings(tmp_path: Path) -> Settings:
@@ -2491,6 +2521,155 @@ def test_webhook_returns_503_and_allows_retry_when_telegram_reply_fails(tmp_path
     assert retried.status_code == 200
     assert retried.get_json()["command"] == "/me"
     assert len(telegram.sent_messages) == 1
+
+
+def test_update_claim_is_released_after_unexpected_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _repository, _telegram = make_service(tmp_path)
+    calls = 0
+
+    def fail_once(_message: dict[str, Any]) -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("synthetic handler failure")
+        return {"ok": True, "retried": True}
+
+    monkeypatch.setattr(service, "_handle_message", fail_once)
+    update = {"update_id": 1000, "message": {}}
+
+    with pytest.raises(RuntimeError, match="synthetic handler failure"):
+        service.handle_update(update)
+
+    assert service.handle_update(update) == {"ok": True, "retried": True}
+
+
+def test_concurrent_question_posts_use_durable_global_claim(tmp_path: Path) -> None:
+    service, repository, _telegram = make_service(tmp_path)
+    repository.bind_topic("hardware", 202, 1)
+    service.question_bank = QuestionBank(
+        [
+            Question(
+                id="network-question",
+                topic_key="network",
+                difficulty="normal",
+                text="Network question?",
+                options=("A", "B"),
+                correct_option_id=0,
+                explanation="Network explanation.",
+                source="",
+            ),
+            Question(
+                id="hardware-question",
+                topic_key="hardware",
+                difficulty="normal",
+                text="Hardware question?",
+                options=("A", "B"),
+                correct_option_id=0,
+                explanation="Hardware explanation.",
+                source="",
+            ),
+        ]
+    )
+    telegram = BlockingSendPollTelegram()
+    service.telegram = telegram  # type: ignore[assignment]
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first_future = pool.submit(
+            service.post_question,
+            topic_key="network",
+            skip_busy_topics=True,
+        )
+        assert telegram.entered.wait(timeout=2)
+        second_future = pool.submit(
+            service.post_question,
+            topic_key="hardware",
+            skip_busy_topics=True,
+        )
+        try:
+            second = second_future.result(timeout=2)
+        finally:
+            telegram.release.set()
+        first = first_future.result(timeout=2)
+
+    assert first.posted is True
+    assert second.posted is False
+    assert len(telegram.sent_polls) == 1
+    assert len(repository.active_polls(utc_now_iso())) == 1
+
+
+def test_concurrent_daily_posts_use_durable_date_claim(tmp_path: Path) -> None:
+    service, _repository, _telegram = make_service(tmp_path)
+    telegram = BlockingSendMessageTelegram()
+    service.telegram = telegram  # type: ignore[assignment]
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first_future = pool.submit(service.post_daily_summary)
+        assert telegram.entered.wait(timeout=2)
+        second_future = pool.submit(service.post_daily_summary)
+        try:
+            second = second_future.result(timeout=2)
+        finally:
+            telegram.release.set()
+        first = first_future.result(timeout=2)
+
+    assert first.posted is True
+    assert second.posted is False
+    assert len(telegram.sent_messages) == 1
+
+
+def test_question_claim_survives_database_failure_after_telegram_send(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, repository, telegram = make_service(tmp_path)
+    original_create_poll = repository.create_poll
+
+    def fail_create_poll(**_kwargs: Any) -> None:
+        raise RuntimeError("synthetic database failure")
+
+    monkeypatch.setattr(repository, "create_poll", fail_create_poll)
+    with pytest.raises(RuntimeError, match="synthetic database failure"):
+        service.post_question(topic_key="network", skip_busy_topics=True)
+
+    monkeypatch.setattr(repository, "create_poll", original_create_poll)
+    retry = service.post_question(topic_key="network", skip_busy_topics=True)
+
+    assert retry.posted is False
+    assert len(telegram.sent_polls) == 1
+
+
+def test_health_returns_503_without_exposing_database_path_on_load_error(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    settings.questions_path.write_text("broken,csv\n", encoding="utf-8")
+    app = create_app(settings=settings, telegram=FakeTelegram())  # type: ignore[arg-type]
+
+    response = app.test_client().get("/health")
+    payload = response.get_json()
+
+    assert response.status_code == 503
+    assert payload["ok"] is False
+    assert payload["questions_loaded"] is False
+    assert "database" not in payload
+    assert str(settings.questions_path) not in response.get_data(as_text=True)
+
+
+def test_empty_secrets_cannot_authorize_webhook_or_cron(tmp_path: Path) -> None:
+    settings = replace(make_settings(tmp_path), webhook_secret="", cron_secret="")
+    app = create_app(settings=settings, telegram=FakeTelegram())  # type: ignore[arg-type]
+    client = app.test_client()
+
+    cron = client.post("/cron/tick", headers={"X-Kvizi-Cron-Secret": ""})
+    webhook = client.post(
+        "/telegram/anything",
+        headers={"X-Telegram-Bot-Api-Secret-Token": ""},
+        json={},
+    )
+
+    assert cron.status_code == 403
+    assert webhook.status_code == 404
 
 
 def test_flask_cron_skips_when_topic_has_active_poll(tmp_path: Path) -> None:

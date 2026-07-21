@@ -26,6 +26,7 @@ from kvizi.telegram import TelegramApiError, TelegramClient
 
 MAX_QUESTIONS_UPLOAD_BYTES = 2_000_000
 PROD_CHECK_RECENT_HOURS = 36
+OPERATION_CLAIM_SECONDS = 300
 TRANSIENT_TELEGRAM_ERROR_MARKERS = (
     "503 service unavailable",
     "unable to connect to proxy",
@@ -117,21 +118,48 @@ class KviziService:
         if not force and self.repository.get_bot_setting(setting_key) == summary_date:
             return DailySummaryResult(False, f"Итоги за {summary_date} уже отправлены.", summary_date)
 
-        stats = self.repository.daily_summary(start_iso, end_iso)
-        text = self._format_daily_summary(summary_date, stats)
-        thread_id = target_thread_id
-        if thread_id is None:
-            thread_id = self._announce_thread_id()
+        operation_key = f"daily_summary:{summary_date}"
+        claimed_at = datetime.now(timezone.utc)
+        if not force and not self.repository.try_claim_operation(
+            operation_key,
+            claimed_at=claimed_at.isoformat(),
+            expires_at=(claimed_at + timedelta(seconds=OPERATION_CLAIM_SECONDS)).isoformat(),
+        ):
+            return DailySummaryResult(False, f"Итоги за {summary_date} уже отправляются.", summary_date)
 
-        self.telegram.send_message(
-            chat_id=self.settings.telegram_chat_id,
-            message_thread_id=thread_id,
-            text=text,
-            disable_notification=True,
-        )
-        if remember_sent:
-            self.repository.set_bot_setting(setting_key, summary_date)
-        return DailySummaryResult(True, text, summary_date)
+        release_claim = not force
+        delivery_attempted = False
+        try:
+            if not force and self.repository.get_bot_setting(setting_key) == summary_date:
+                return DailySummaryResult(False, f"Итоги за {summary_date} уже отправлены.", summary_date)
+
+            stats = self.repository.daily_summary(start_iso, end_iso)
+            text = self._format_daily_summary(summary_date, stats)
+            thread_id = target_thread_id
+            if thread_id is None:
+                thread_id = self._announce_thread_id()
+
+            delivery_attempted = True
+            self.telegram.send_message(
+                chat_id=self.settings.telegram_chat_id,
+                message_thread_id=thread_id,
+                text=text,
+                disable_notification=True,
+            )
+            if remember_sent:
+                self.repository.set_bot_setting(setting_key, summary_date)
+            return DailySummaryResult(True, text, summary_date)
+        except TelegramApiError as exc:
+            if exc.ambiguous:
+                release_claim = False
+            raise
+        except Exception:
+            if delivery_attempted:
+                release_claim = False
+            raise
+        finally:
+            if release_claim:
+                self.repository.release_operation(operation_key)
 
     def post_backup_export(self) -> BackupExportResult:
         export_file = self._build_state_export(
@@ -202,66 +230,102 @@ class KviziService:
                 return PostQuestionResult(False, "Все подходящие топики заняты активными вопросами.")
             return PostQuestionResult(False, "Нет активных топиков с вопросами.")
 
-        question = self._select_question(route.topic_key, difficulty)
-        if question is None:
-            if difficulty:
-                return PostQuestionResult(False, f"В теме {route.topic_key} нет вопросов сложности {difficulty}.")
-            return PostQuestionResult(False, f"В теме {route.topic_key} нет вопросов.")
+        # Telegram delivery and the following SQLite write are not atomic. A single
+        # durable claim keeps overlapping cron/manual requests from publishing two
+        # polls before either request has persisted its result.
+        operation_key = "post_question"
+        claimed_at = datetime.now(timezone.utc)
+        if not self.repository.try_claim_operation(
+            operation_key,
+            claimed_at=claimed_at.isoformat(),
+            expires_at=(claimed_at + timedelta(seconds=OPERATION_CLAIM_SECONDS)).isoformat(),
+        ):
+            return PostQuestionResult(False, f"В теме {route.topic_key} вопрос уже публикуется.")
 
-        sent = self.telegram.send_poll(
-            chat_id=self.settings.telegram_chat_id,
-            question=self._poll_title(question),
-            options=list(question.options),
-            correct_option_id=question.correct_option_id,
-            explanation=question.explanation,
-            message_thread_id=route.message_thread_id,
-            reply_markup={
-                "inline_keyboard": [
-                    [
-                        {"text": "Риск x2", "callback_data": "bet:2"},
-                        {"text": "Риск x3", "callback_data": "bet:3"},
+        release_claim = True
+        delivery_attempted = False
+        try:
+            if (
+                skip_busy_topics
+                and route.topic_key in self.repository.active_poll_topic_keys(utc_now_iso())
+            ):
+                return PostQuestionResult(False, f"В теме {route.topic_key} уже есть активный вопрос.")
+
+            question = self._select_question(route.topic_key, difficulty)
+            if question is None:
+                if difficulty:
+                    return PostQuestionResult(
+                        False,
+                        f"В теме {route.topic_key} нет вопросов сложности {difficulty}.",
+                    )
+                return PostQuestionResult(False, f"В теме {route.topic_key} нет вопросов.")
+
+            delivery_attempted = True
+            sent = self.telegram.send_poll(
+                chat_id=self.settings.telegram_chat_id,
+                question=self._poll_title(question),
+                options=list(question.options),
+                correct_option_id=question.correct_option_id,
+                explanation=question.explanation,
+                message_thread_id=route.message_thread_id,
+                reply_markup={
+                    "inline_keyboard": [
+                        [
+                            {"text": "Риск x2", "callback_data": "bet:2"},
+                            {"text": "Риск x3", "callback_data": "bet:3"},
+                        ]
                     ]
-                ]
-            },
-        )
+                },
+            )
 
-        result = sent["result"]
-        poll = result["poll"]
-        message_id = int(result["message_id"])
-        opened_at = datetime.now(timezone.utc)
-        closes_at = opened_at + timedelta(seconds=self.settings.open_seconds)
-        self.repository.create_poll(
-            poll_id=str(poll["id"]),
-            telegram_message_id=message_id,
-            question_id=question.id,
-            topic_key=route.topic_key,
-            message_thread_id=route.message_thread_id,
-            correct_option_id=question.correct_option_id,
-            difficulty=question.difficulty,
-            opened_at=opened_at.isoformat(),
-            closes_at=closes_at.isoformat(),
-            explanation=question.explanation,
-            requested_by=requested_by,
-            request_cost=request_cost,
-            request_reward=request_reward,
-        )
-        self.repository.mark_question_asked(route.topic_key, question.id)
-        question_link = self._message_link(message_id)
-        self._announce_question(route, question, question_link)
+            result = sent["result"]
+            poll = result["poll"]
+            message_id = int(result["message_id"])
+            opened_at = datetime.now(timezone.utc)
+            closes_at = opened_at + timedelta(seconds=self.settings.open_seconds)
+            self.repository.create_poll(
+                poll_id=str(poll["id"]),
+                telegram_message_id=message_id,
+                question_id=question.id,
+                topic_key=route.topic_key,
+                message_thread_id=route.message_thread_id,
+                correct_option_id=question.correct_option_id,
+                difficulty=question.difficulty,
+                opened_at=opened_at.isoformat(),
+                closes_at=closes_at.isoformat(),
+                explanation=question.explanation,
+                requested_by=requested_by,
+                request_cost=request_cost,
+                request_reward=request_reward,
+            )
+            self.repository.mark_question_asked(route.topic_key, question.id)
+            question_link = self._message_link(message_id)
+            self._announce_question(route, question, question_link)
 
-        return PostQuestionResult(
-            True,
-            copy.question_intro(
-                route.topic_key,
-                question.difficulty,
-                base_points(question.difficulty, self.settings.difficulty_points),
-                self.rng.choice,
-            ),
-            topic_key=route.topic_key,
-            question_id=question.id,
-            poll_id=str(poll["id"]),
-            question_link=question_link,
-        )
+            return PostQuestionResult(
+                True,
+                copy.question_intro(
+                    route.topic_key,
+                    question.difficulty,
+                    base_points(question.difficulty, self.settings.difficulty_points),
+                    self.rng.choice,
+                ),
+                topic_key=route.topic_key,
+                question_id=question.id,
+                poll_id=str(poll["id"]),
+                question_link=question_link,
+            )
+        except TelegramApiError as exc:
+            if exc.ambiguous:
+                release_claim = False
+            raise
+        except Exception:
+            if delivery_attempted:
+                release_claim = False
+            raise
+        finally:
+            if release_claim:
+                self.repository.release_operation(operation_key)
 
     def handle_update(self, update: dict[str, Any]) -> dict[str, Any]:
         update_id = update.get("update_id")
@@ -277,7 +341,7 @@ class KviziService:
             if "message" in update:
                 return self._handle_message(update["message"])
             return {"ok": True, "ignored": True}
-        except TelegramApiError:
+        except Exception:
             self.repository.forget_update(claimed_update_id)
             raise
 

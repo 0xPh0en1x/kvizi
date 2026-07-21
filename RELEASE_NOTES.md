@@ -1,5 +1,17 @@
 # Release Notes
 
+## Reliability update - 2026-07-22
+
+- Updated native quiz poll payloads for the current Telegram Bot API.
+- Disabled automatic retries for non-idempotent Telegram sends and retained
+  retries for safe metadata/download requests.
+- Added durable SQLite claims for overlapping question and daily-summary runs.
+- Made failed webhook updates retryable after any unexpected handler error.
+- Removed built-in webhook and cron secrets; unauthenticated endpoints now fail closed.
+- Made `/health` report real readiness with HTTP 503 on configuration or question-load errors.
+- Added Telegram length-limit validation for questions, options, and explanations.
+- Added GitHub Actions checks on pushes and pull requests for Python 3.10 and 3.13.
+
 ## v1 local prerelease - 2026-07-06
 
 Статус: готово к первому переносу на PythonAnywhere, но production-деплой ещё
@@ -58,7 +70,7 @@
 Last local verification:
 
 ```text
-python -m pytest -q -> 84 passed
+python -m pytest -q -> 102 passed
 python scripts/validate_questions.py -> OK, warnings expected for sample CSV
 python scripts/smoke_check.py -> failures=0, warnings expected locally
 ```

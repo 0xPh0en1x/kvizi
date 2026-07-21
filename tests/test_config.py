@@ -28,3 +28,13 @@ def test_load_settings_rejects_invalid_announcement_flag(monkeypatch: pytest.Mon
 
     with pytest.raises(ValueError, match="Invalid boolean value"):
         load_settings()
+
+
+def test_load_settings_has_no_known_secret_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("KVIZI_WEBHOOK_SECRET", raising=False)
+    monkeypatch.delenv("KVIZI_CRON_SECRET", raising=False)
+
+    settings = load_settings()
+
+    assert settings.webhook_secret == ""
+    assert settings.cron_secret == ""

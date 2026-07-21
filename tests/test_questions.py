@@ -45,3 +45,27 @@ def test_load_questions_accepts_course_like_difficulty_slug(tmp_path: Path) -> N
     bank = load_questions(path)
 
     assert bank.get("q1").difficulty == "ccna"  # type: ignore[union-attr]
+
+
+def test_load_questions_rejects_question_over_telegram_limit(tmp_path: Path) -> None:
+    path = tmp_path / "questions.csv"
+    write_questions(path, f"q1,network,normal,{'Q' * 301},A,B,C,D,,,1,Because,Source\n")
+
+    with pytest.raises(QuestionValidationError, match="question exceeds Telegram limit"):
+        load_questions(path)
+
+
+def test_load_questions_rejects_option_over_telegram_limit(tmp_path: Path) -> None:
+    path = tmp_path / "questions.csv"
+    write_questions(path, f"q1,network,normal,Question?,{'A' * 101},B,C,D,,,1,Because,Source\n")
+
+    with pytest.raises(QuestionValidationError, match="option_1 exceeds Telegram limit"):
+        load_questions(path)
+
+
+def test_load_questions_rejects_explanation_over_telegram_limit(tmp_path: Path) -> None:
+    path = tmp_path / "questions.csv"
+    write_questions(path, f"q1,network,normal,Question?,A,B,C,D,,,1,{'E' * 201},Source\n")
+
+    with pytest.raises(QuestionValidationError, match="explanation exceeds Telegram limit"):
+        load_questions(path)

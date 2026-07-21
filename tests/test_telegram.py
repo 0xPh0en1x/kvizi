@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 import kvizi.telegram as telegram_module
 from kvizi.telegram import TelegramApiError, TelegramClient
 
@@ -21,6 +23,14 @@ class FakeFileResponse:
         self.content = content
         self.status_code = status_code
         self.text = content.decode("utf-8", errors="replace")
+
+
+class FakeNonJsonResponse:
+    status_code = 200
+    text = "not json"
+
+    def json(self) -> dict[str, Any]:
+        raise ValueError("not json")
 
 
 def test_download_file_resolves_telegram_file_path(monkeypatch: Any) -> None:
@@ -58,30 +68,82 @@ def test_download_file_resolves_telegram_file_path(monkeypatch: Any) -> None:
     ]
 
 
-def test_send_message_retries_transient_proxy_error(monkeypatch: Any) -> None:
+def test_send_poll_uses_current_bot_api_payload(monkeypatch: Any) -> None:
     post_calls: list[dict[str, Any]] = []
 
     def fake_post(url: str, json: dict[str, Any], timeout: int) -> FakeJsonResponse:
         post_calls.append({"url": url, "json": json, "timeout": timeout})
-        if len(post_calls) == 1:
-            raise telegram_module.requests.exceptions.ProxyError("proxy 503 for bottoken")
-        return FakeJsonResponse({"ok": True, "result": {"message_id": 123}})
+        return FakeJsonResponse(
+            {"ok": True, "result": {"message_id": 123, "poll": {"id": "poll-1"}}}
+        )
+
+    monkeypatch.setattr(telegram_module.requests, "post", fake_post)
+
+    TelegramClient("token").send_poll(
+        chat_id="-1001",
+        question="Question?",
+        options=["One", "Two"],
+        correct_option_id=1,
+        explanation="Because",
+        message_thread_id=10,
+        reply_markup={"inline_keyboard": []},
+    )
+
+    payload = post_calls[0]["json"]
+    assert payload["options"] == [{"text": "One"}, {"text": "Two"}]
+    assert payload["correct_option_ids"] == [1]
+    assert "correct_option_id" not in payload
+
+
+def test_send_message_does_not_retry_ambiguous_proxy_error(monkeypatch: Any) -> None:
+    post_calls: list[dict[str, Any]] = []
+
+    def fake_post(url: str, json: dict[str, Any], timeout: int) -> FakeJsonResponse:
+        post_calls.append({"url": url, "json": json, "timeout": timeout})
+        raise telegram_module.requests.exceptions.ProxyError("proxy 503 for bottoken")
 
     monkeypatch.setattr(telegram_module.requests, "post", fake_post)
     monkeypatch.setattr(telegram_module.time, "sleep", lambda _: None)
 
-    result = TelegramClient("token", timeout_seconds=7, max_retries=2).send_message(
-        chat_id="-1001",
-        text="hello",
+    with pytest.raises(TelegramApiError) as error:
+        TelegramClient("token", timeout_seconds=7, max_retries=2).send_message(
+            chat_id="-1001",
+            text="hello",
+        )
+
+    assert error.value.ambiguous is True
+    assert len(post_calls) == 1
+
+
+def test_get_file_retries_safe_transient_proxy_error(monkeypatch: Any) -> None:
+    post_calls = 0
+
+    def fake_post(url: str, json: dict[str, Any], timeout: int) -> FakeJsonResponse:
+        nonlocal post_calls
+        post_calls += 1
+        if post_calls == 1:
+            raise telegram_module.requests.exceptions.ProxyError("proxy 503")
+        return FakeJsonResponse({"ok": True, "result": {"file_path": "questions.csv"}})
+
+    monkeypatch.setattr(telegram_module.requests, "post", fake_post)
+    monkeypatch.setattr(telegram_module.requests, "get", lambda *args, **kwargs: FakeFileResponse(b"ok"))
+    monkeypatch.setattr(telegram_module.time, "sleep", lambda _: None)
+
+    assert TelegramClient("token", max_retries=2).download_file("file-1") == b"ok"
+    assert post_calls == 2
+
+
+def test_non_json_send_response_is_marked_ambiguous(monkeypatch: Any) -> None:
+    monkeypatch.setattr(
+        telegram_module.requests,
+        "post",
+        lambda *args, **kwargs: FakeNonJsonResponse(),
     )
 
-    assert result["ok"] is True
-    assert len(post_calls) == 2
-    assert post_calls[1] == {
-        "url": "https://api.telegram.org/bottoken/sendMessage",
-        "json": {"chat_id": "-1001", "text": "hello", "disable_notification": False},
-        "timeout": 7,
-    }
+    with pytest.raises(TelegramApiError) as error:
+        TelegramClient("token").send_message(chat_id="-1001", text="hello")
+
+    assert error.value.ambiguous is True
 
 
 def test_send_message_wraps_and_sanitizes_request_exception(monkeypatch: Any) -> None:

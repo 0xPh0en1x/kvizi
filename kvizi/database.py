@@ -1010,6 +1010,28 @@ class KviziRepository:
             ).fetchone()
         return None if row is None else str(row["value"])
 
+    def try_claim_operation(self, key: str, *, claimed_at: str, expires_at: str) -> bool:
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO operation_claims (operation_key, claimed_at, expires_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(operation_key) DO UPDATE SET
+                    claimed_at = excluded.claimed_at,
+                    expires_at = excluded.expires_at
+                WHERE operation_claims.expires_at <= excluded.claimed_at
+                """,
+                (key, claimed_at, expires_at),
+            )
+        return cursor.rowcount == 1
+
+    def release_operation(self, key: str) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                "DELETE FROM operation_claims WHERE operation_key = ?",
+                (key,),
+            )
+
     def try_claim_update(self, update_id: int | None) -> bool:
         if update_id is None:
             return True
@@ -1135,6 +1157,12 @@ CREATE TABLE IF NOT EXISTS bot_settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL,
     updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS operation_claims (
+    operation_key TEXT PRIMARY KEY,
+    claimed_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_polls_status_closes_at ON polls(status, closes_at);

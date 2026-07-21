@@ -1,11 +1,30 @@
 from __future__ import annotations
 
+import hmac
+
 from flask import Flask, abort, jsonify, request
 
 from kvizi.config import Settings, load_settings
 from kvizi.database import KviziRepository, utc_now_iso
 from kvizi.service import KviziService
 from kvizi.telegram import TelegramApiError, TelegramClient
+
+
+def _secret_matches(configured: str, provided: str | None) -> bool:
+    if not configured or not provided:
+        return False
+    return hmac.compare_digest(configured.encode("utf-8"), provided.encode("utf-8"))
+
+
+def _runtime_configured(settings: Settings) -> bool:
+    return all(
+        (
+            settings.telegram_bot_token,
+            settings.telegram_chat_id,
+            settings.webhook_secret,
+            settings.cron_secret,
+        )
+    )
 
 
 def create_app(
@@ -31,20 +50,29 @@ def create_app(
 
     @app.get("/health")
     def health():
-        return jsonify(
-            {
-                "ok": True,
-                "questions": service.question_bank.count(),
-                "load_error": app.config["KVIZI_LOAD_ERROR"],
-                "database": str(settings.database_path),
-            }
+        questions_count = service.question_bank.count()
+        configured = _runtime_configured(settings)
+        ok = not app.config["KVIZI_LOAD_ERROR"] and questions_count > 0 and configured
+        return (
+            jsonify(
+                {
+                    "ok": ok,
+                    "questions": questions_count,
+                    "configuration_ok": configured,
+                    "questions_loaded": not bool(app.config["KVIZI_LOAD_ERROR"]),
+                }
+            ),
+            200 if ok else 503,
         )
 
     @app.post("/telegram/<webhook_secret>")
     def telegram_webhook(webhook_secret: str):
-        if webhook_secret != settings.webhook_secret:
+        if not _secret_matches(settings.webhook_secret, webhook_secret):
             abort(404)
-        if request.headers.get("X-Telegram-Bot-Api-Secret-Token") != settings.webhook_secret:
+        if not _secret_matches(
+            settings.webhook_secret,
+            request.headers.get("X-Telegram-Bot-Api-Secret-Token"),
+        ):
             abort(403)
         update = request.get_json(silent=True) or {}
         try:
@@ -60,7 +88,10 @@ def create_app(
 
     @app.post("/cron/tick")
     def cron_tick():
-        if request.headers.get("X-Kvizi-Cron-Secret") != settings.cron_secret:
+        if not _secret_matches(
+            settings.cron_secret,
+            request.headers.get("X-Kvizi-Cron-Secret"),
+        ):
             abort(403)
 
         started_at = utc_now_iso()
@@ -94,7 +125,10 @@ def create_app(
 
     @app.post("/cron/maintenance")
     def cron_maintenance():
-        if request.headers.get("X-Kvizi-Cron-Secret") != settings.cron_secret:
+        if not _secret_matches(
+            settings.cron_secret,
+            request.headers.get("X-Kvizi-Cron-Secret"),
+        ):
             abort(403)
 
         started_at = utc_now_iso()
@@ -123,7 +157,10 @@ def create_app(
 
     @app.post("/cron/daily")
     def cron_daily():
-        if request.headers.get("X-Kvizi-Cron-Secret") != settings.cron_secret:
+        if not _secret_matches(
+            settings.cron_secret,
+            request.headers.get("X-Kvizi-Cron-Secret"),
+        ):
             abort(403)
 
         started_at = utc_now_iso()
@@ -152,7 +189,7 @@ def create_app(
 
     @app.post("/cron/backup")
     def cron_backup():
-        if request.headers.get("X-Kvizi-Cron-Secret") != settings.cron_secret:
+        if not _secret_matches(settings.cron_secret, request.headers.get("X-Kvizi-Cron-Secret")):
             abort(403)
 
         started_at = utc_now_iso()
