@@ -76,6 +76,7 @@ class TelegramClient:
         options: list[str],
         correct_option_id: int,
         explanation: str,
+        open_period: int | None,
         message_thread_id: int | None,
         reply_markup: dict[str, Any],
     ) -> dict[str, Any]:
@@ -91,6 +92,8 @@ class TelegramClient:
         }
         if explanation:
             payload["explanation"] = explanation
+        if open_period is not None:
+            payload["open_period"] = open_period
         if message_thread_id is not None:
             payload["message_thread_id"] = message_thread_id
         return self._request("sendPoll", payload)

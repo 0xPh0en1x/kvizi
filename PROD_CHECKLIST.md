@@ -80,6 +80,10 @@ Expected:
 - `maintenance` can close `0` polls.
 - `daily` can skip if today's summary was already sent.
 - `backup` sends JSON to admins who opened a private chat with the bot.
+- `poll_answer_rejected` in `/kvizi_errors` means an answer arrived after the
+  one-hour delivery grace or referenced an unknown poll and should be investigated.
+- `poll_answer_count_mismatch` names a poll whose Telegram voter total is still
+  larger than the answers stored in SQLite after the extended 24-hour grace.
 
 After test runs, check:
 

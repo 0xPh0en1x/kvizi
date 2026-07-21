@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,6 +33,7 @@ class AnswerResult:
     stake: int
     reason: str = ""
     is_challenge: bool = False
+    reason_code: str = ""
 
 
 class KviziRepository:
@@ -74,6 +75,7 @@ class KviziRepository:
             "requested_by": "INTEGER",
             "request_cost": "INTEGER NOT NULL DEFAULT 0",
             "request_reward": "INTEGER NOT NULL DEFAULT 0",
+            "telegram_voter_count": "INTEGER",
         }
         for name, definition in columns.items():
             if name not in existing:
@@ -250,15 +252,14 @@ class KviziRepository:
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def active_poll_topic_keys(self, now_iso: str) -> set[str]:
+    def active_poll_topic_keys(self, _now_iso: str) -> set[str]:
         with self.connect() as connection:
             rows = connection.execute(
                 """
                 SELECT DISTINCT topic_key
                 FROM polls
-                WHERE status = 'active' AND closes_at > ?
-                """,
-                (now_iso,),
+                WHERE status = 'active'
+                """
             ).fetchall()
         return {str(row["topic_key"]) for row in rows}
 
@@ -314,12 +315,80 @@ class KviziRepository:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def mark_poll_closing(
+        self,
+        poll_id: str,
+        *,
+        closed_at: str,
+        telegram_voter_count: int | None = None,
+    ) -> bool:
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE polls
+                SET status = 'closing',
+                    closed_at = ?,
+                    telegram_voter_count = COALESCE(?, telegram_voter_count)
+                WHERE poll_id = ? AND status = 'active'
+                """,
+                (closed_at, telegram_voter_count, poll_id),
+            )
+            transitioned = cursor.rowcount == 1
+            if not transitioned and telegram_voter_count is not None:
+                connection.execute(
+                    """
+                    UPDATE polls
+                    SET telegram_voter_count = ?
+                    WHERE poll_id = ? AND status = 'closing'
+                    """,
+                    (telegram_voter_count, poll_id),
+                )
+        return transitioned
+
+    def closing_polls_due(self, cutoff_iso: str) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM polls
+                WHERE status = 'closing' AND closed_at <= ?
+                ORDER BY closed_at ASC
+                """,
+                (cutoff_iso,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def mark_poll_closed(self, poll_id: str) -> None:
         with self.connect() as connection:
             connection.execute(
-                "UPDATE polls SET status = 'closed', closed_at = ? WHERE poll_id = ?",
+                """
+                UPDATE polls
+                SET status = 'closed', closed_at = COALESCE(closed_at, ?)
+                WHERE poll_id = ?
+                """,
                 (utc_now_iso(), poll_id),
             )
+
+    def finalize_closing_poll(
+        self,
+        *,
+        season: str,
+        poll: dict[str, Any],
+        now_iso: str,
+    ) -> tuple[bool, AnswerResult | None]:
+        with self.connect() as connection:
+            cursor = connection.execute(
+                "UPDATE polls SET status = 'closed' WHERE poll_id = ? AND status = 'closing'",
+                (poll["poll_id"],),
+            )
+            if cursor.rowcount != 1:
+                return False, None
+            settlement = self.settle_unanswered_challenge(
+                season=season,
+                poll=poll,
+                now_iso=now_iso,
+                _connection=connection,
+            )
+        return True, settlement
 
     def human_answer_count_for_poll(self, poll_id: str) -> int:
         with self.connect() as connection:
@@ -645,7 +714,7 @@ class KviziRepository:
             ).fetchall()
         return {str(row["question_id"]): dict(row) for row in rows}
 
-    def has_active_challenge(self, user_id: int, now_iso: str) -> bool:
+    def has_active_challenge(self, user_id: int, _now_iso: str) -> bool:
         with self.connect() as connection:
             row = connection.execute(
                 """
@@ -657,11 +726,10 @@ class KviziRepository:
                 WHERE p.requested_by = ?
                   AND p.request_cost > 0
                   AND p.status = 'active'
-                  AND p.closes_at > ?
                   AND a.user_id IS NULL
                 LIMIT 1
                 """,
-                (user_id, now_iso),
+                (user_id,),
             ).fetchone()
         return row is not None
 
@@ -681,7 +749,17 @@ class KviziRepository:
         with self.connect() as connection:
             poll = connection.execute("SELECT * FROM polls WHERE poll_id = ?", (poll_id,)).fetchone()
             if poll is None:
-                return AnswerResult(False, False, 0, 0, 0, 0, 1, "опрос не найден")
+                return AnswerResult(
+                    False,
+                    False,
+                    0,
+                    0,
+                    0,
+                    0,
+                    1,
+                    "опрос не найден",
+                    reason_code="poll_not_found",
+                )
 
             existing = connection.execute(
                 "SELECT * FROM answers WHERE poll_id = ? AND user_id = ?",
@@ -698,10 +776,24 @@ class KviziRepository:
                     int(existing["streak_bonus"]),
                     int(existing["stake"]),
                     "ответ уже учтен",
+                    reason_code="duplicate",
                 )
 
-            if poll["status"] != "active" or poll["closes_at"] <= now_iso:
-                return AnswerResult(False, False, 0, 0, 0, 0, 1, "время вышло")
+            # Telegram's poll state is authoritative. An active poll may remain
+            # answerable after the planned closes_at when stopPoll is delayed,
+            # while a closing poll accepts webhook updates already in flight.
+            if poll["status"] not in {"active", "closing"}:
+                return AnswerResult(
+                    False,
+                    False,
+                    0,
+                    0,
+                    0,
+                    0,
+                    1,
+                    "время вышло",
+                    reason_code="poll_closed",
+                )
 
             stake_row = connection.execute(
                 "SELECT stake FROM bets WHERE poll_id = ? AND user_id = ?",
@@ -821,6 +913,7 @@ class KviziRepository:
         season: str,
         poll: dict[str, Any],
         now_iso: str,
+        _connection: sqlite3.Connection | None = None,
     ) -> AnswerResult | None:
         requested_by = poll.get("requested_by")
         request_cost = int(poll.get("request_cost") or 0)
@@ -828,7 +921,8 @@ class KviziRepository:
             return None
 
         user_id = int(requested_by)
-        with self.connect() as connection:
+        connection_context = self.connect() if _connection is None else nullcontext(_connection)
+        with connection_context as connection:
             existing = connection.execute(
                 "SELECT 1 FROM answers WHERE poll_id = ? AND user_id = ?",
                 (poll["poll_id"], user_id),
@@ -1086,7 +1180,8 @@ CREATE TABLE IF NOT EXISTS polls (
     explanation TEXT NOT NULL DEFAULT '',
     requested_by INTEGER,
     request_cost INTEGER NOT NULL DEFAULT 0,
-    request_reward INTEGER NOT NULL DEFAULT 0
+    request_reward INTEGER NOT NULL DEFAULT 0,
+    telegram_voter_count INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS answers (
@@ -1166,6 +1261,7 @@ CREATE TABLE IF NOT EXISTS operation_claims (
 );
 
 CREATE INDEX IF NOT EXISTS idx_polls_status_closes_at ON polls(status, closes_at);
+CREATE INDEX IF NOT EXISTS idx_polls_status_closed_at ON polls(status, closed_at);
 CREATE INDEX IF NOT EXISTS idx_scores_leaderboard ON scores(season, points DESC, correct_count DESC);
 CREATE INDEX IF NOT EXISTS idx_error_events_created_at ON error_events(created_at DESC);
 """

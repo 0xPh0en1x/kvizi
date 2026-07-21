@@ -27,6 +27,8 @@ from kvizi.telegram import TelegramApiError, TelegramClient
 MAX_QUESTIONS_UPLOAD_BYTES = 2_000_000
 PROD_CHECK_RECENT_HOURS = 36
 OPERATION_CLAIM_SECONDS = 300
+ANSWER_DELIVERY_GRACE_SECONDS = 3600
+MISMATCH_DELIVERY_GRACE_SECONDS = 86400
 TRANSIENT_TELEGRAM_ERROR_MARKERS = (
     "503 service unavailable",
     "unable to connect to proxy",
@@ -199,16 +201,36 @@ class KviziService:
         )
 
     def close_expired_polls(self) -> int:
-        now_iso = utc_now_iso()
+        now = datetime.now(timezone.utc)
+        now_iso = now.isoformat()
+        changed = 0
         expired = self.repository.expired_active_polls(now_iso)
         for poll in expired:
-            self._close_poll(
+            if self._close_poll(
                 poll,
                 now_iso=now_iso,
                 stop_error_event="stop_poll_failed",
-                announce_if_unanswered=True,
+            ):
+                changed += 1
+
+        cutoff_iso = (now - timedelta(seconds=ANSWER_DELIVERY_GRACE_SECONDS)).isoformat()
+        mismatch_cutoff_iso = (
+            now - timedelta(seconds=MISMATCH_DELIVERY_GRACE_SECONDS)
+        ).isoformat()
+        for poll in self.repository.closing_polls_due(cutoff_iso):
+            telegram_voter_count = poll.get("telegram_voter_count")
+            human_answer_count = self.repository.human_answer_count_for_poll(
+                str(poll["poll_id"])
             )
-        return len(expired)
+            if (
+                telegram_voter_count is not None
+                and human_answer_count < int(telegram_voter_count)
+                and str(poll["closed_at"]) > mismatch_cutoff_iso
+            ):
+                continue
+            if self._finalize_closing_poll(poll, now_iso=now_iso):
+                changed += 1
+        return changed
 
     def post_question(
         self,
@@ -267,6 +289,7 @@ class KviziService:
                 options=list(question.options),
                 correct_option_id=question.correct_option_id,
                 explanation=question.explanation,
+                open_period=self.settings.open_seconds,
                 message_thread_id=route.message_thread_id,
                 reply_markup={
                     "inline_keyboard": [
@@ -336,6 +359,8 @@ class KviziService:
         try:
             if "poll_answer" in update:
                 return self._handle_poll_answer(update["poll_answer"])
+            if "poll" in update:
+                return self._handle_poll_update(update["poll"])
             if "callback_query" in update:
                 return self._handle_callback_query(update["callback_query"])
             if "message" in update:
@@ -401,6 +426,16 @@ class KviziService:
             difficulty_points=self.settings.difficulty_points,
         )
 
+        if not result.recorded and result.reason_code not in {"", "duplicate"}:
+            self.repository.record_error_event(
+                source="telegram",
+                event="poll_answer_rejected",
+                message=(
+                    f"poll={poll_id}, user={user.get('id')}, "
+                    f"reason={result.reason_code}"
+                ),
+            )
+
         poll = self.repository.get_poll(poll_id) if result.recorded else None
         should_send_score_event = (
             result.recorded
@@ -428,6 +463,18 @@ class KviziService:
             "points": result.points,
             "reason": result.reason,
         }
+
+    def _handle_poll_update(self, poll: dict[str, Any]) -> dict[str, Any]:
+        poll_id = str(poll.get("id") or "")
+        if not poll_id or not poll.get("is_closed"):
+            return {"ok": True, "ignored": True}
+
+        closing = self.repository.mark_poll_closing(
+            poll_id,
+            closed_at=utc_now_iso(),
+            telegram_voter_count=self._telegram_voter_count(poll),
+        )
+        return {"ok": True, "poll_id": poll_id, "closing": closing}
 
     def _handle_callback_query(self, query: dict[str, Any]) -> dict[str, Any]:
         data = str(query.get("data") or "")
@@ -810,13 +857,12 @@ class KviziService:
 
         closed = 0
         for poll in polls:
-            self._close_poll(
+            if self._close_poll(
                 poll,
                 now_iso=now_iso,
                 stop_error_event="close_here_stop_poll_failed",
-                announce_if_unanswered=True,
-            )
-            closed += 1
+            ):
+                closed += 1
 
         self._reply(message, f"Закрыто активных вопросов в этом топике: {closed}.")
         return closed
@@ -827,29 +873,73 @@ class KviziService:
         *,
         now_iso: str,
         stop_error_event: str,
-        announce_if_unanswered: bool,
-    ) -> None:
+    ) -> bool:
         poll_id = str(poll["poll_id"])
-        had_human_answers = self.repository.human_answer_count_for_poll(poll_id) > 0
-        self.repository.settle_unanswered_challenge(
+        telegram_voter_count: int | None = None
+        try:
+            stopped = self.telegram.stop_poll(
+                chat_id=self.settings.telegram_chat_id,
+                message_id=int(poll["telegram_message_id"]),
+            )
+            telegram_voter_count = self._telegram_voter_count(stopped.get("result") or {})
+        except TelegramApiError as exc:
+            if not self._stop_error_means_poll_closed(exc):
+                self.repository.record_error_event(
+                    source="telegram",
+                    event=stop_error_event,
+                    message=(
+                        f"poll={poll_id}, message={poll['telegram_message_id']}: {exc}"
+                    ),
+                )
+                return False
+
+        return self.repository.mark_poll_closing(
+            poll_id,
+            closed_at=now_iso,
+            telegram_voter_count=telegram_voter_count,
+        )
+
+    def _finalize_closing_poll(self, poll: dict[str, Any], *, now_iso: str) -> bool:
+        finalized, _settlement = self.repository.finalize_closing_poll(
             season=self.settings.season_name,
             poll=poll,
             now_iso=now_iso,
         )
-        try:
-            self.telegram.stop_poll(
-                chat_id=self.settings.telegram_chat_id,
-                message_id=int(poll["telegram_message_id"]),
-            )
-        except TelegramApiError as exc:
+        if not finalized:
+            return False
+        human_answer_count = self.repository.human_answer_count_for_poll(str(poll["poll_id"]))
+        telegram_voter_count = poll.get("telegram_voter_count")
+        if telegram_voter_count is not None and human_answer_count < int(telegram_voter_count):
             self.repository.record_error_event(
                 source="telegram",
-                event=stop_error_event,
-                message=str(exc),
+                event="poll_answer_count_mismatch",
+                message=(
+                    f"poll={poll['poll_id']}: telegram={telegram_voter_count}, "
+                    f"sqlite={human_answer_count}"
+                ),
             )
-        self.repository.mark_poll_closed(poll_id)
-        if announce_if_unanswered and not had_human_answers:
+        if human_answer_count == 0 and (
+            telegram_voter_count is None or int(telegram_voter_count) == 0
+        ):
             self._announce_no_answers_closed(poll)
+        return True
+
+    def _telegram_voter_count(self, poll: dict[str, Any]) -> int | None:
+        value = poll.get("total_voter_count")
+        return int(value) if value is not None else None
+
+    def _stop_error_means_poll_closed(self, error: TelegramApiError) -> bool:
+        if error.ambiguous:
+            return False
+        message = str(error).lower()
+        return any(
+            marker in message
+            for marker in (
+                "poll has already been closed",
+                "message is not a poll",
+                "message to stop not found",
+            )
+        )
 
     def _postnow_topic_key(self, args: list[str], thread_id: int | None) -> str | None:
         if args:

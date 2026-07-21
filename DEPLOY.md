@@ -192,7 +192,9 @@ https://YOUR_USERNAME.pythonanywhere.com/cron/tick
 https://YOUR_USERNAME.pythonanywhere.com/cron/maintenance
 ```
 
-Every 10-15 minutes. Closes expired polls and settles expired challenge.
+Every 10-15 minutes. Closes expired polls, waits one hour for delayed Telegram
+`poll_answer` webhooks (up to 24 hours when voter totals do not match), then
+settles unanswered challenges.
 
 ```text
 https://YOUR_USERNAME.pythonanywhere.com/cron/daily

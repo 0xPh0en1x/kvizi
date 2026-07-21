@@ -11,6 +11,13 @@
 - Made `/health` report real readiness with HTTP 503 on configuration or question-load errors.
 - Added Telegram length-limit validation for questions, options, and explanations.
 - Added GitHub Actions checks on pushes and pull requests for Python 3.10 and 3.13.
+- Made Telegram poll state authoritative instead of rejecting answers solely by local time.
+- Added a one-hour `closing` grace period for delayed `poll_answer` webhook delivery.
+- Kept polls active after ambiguous `stopPoll` failures so a replacement poll is not posted.
+- Added Telegram-side automatic poll closure through `open_period` and handling of `poll` updates.
+- Added `poll_answer_rejected` diagnostics for answers that arrive after finalization.
+- Extended answer delivery grace to 24 hours when Telegram and SQLite voter totals differ.
+- Added Telegram-voter versus SQLite-answer mismatch diagnostics at poll finalization.
 
 ## v1 local prerelease - 2026-07-06
 
@@ -70,7 +77,7 @@
 Last local verification:
 
 ```text
-python -m pytest -q -> 102 passed
+python -m pytest -q -> 110 passed
 python scripts/validate_questions.py -> OK, warnings expected for sample CSV
 python scripts/smoke_check.py -> failures=0, warnings expected locally
 ```

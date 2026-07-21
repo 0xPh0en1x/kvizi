@@ -104,6 +104,21 @@ class BlockingSendMessageTelegram(FakeTelegram):
         return super().send_message(**payload)
 
 
+class AmbiguousStopPollTelegram(FakeTelegram):
+    def __init__(self) -> None:
+        super().__init__()
+        self.stop_attempts = 0
+
+    def stop_poll(self, **payload: Any) -> dict[str, Any]:
+        self.stop_attempts += 1
+        raise TelegramApiError("temporary proxy 503", ambiguous=True)
+
+
+class AlreadyClosedStopPollTelegram(FakeTelegram):
+    def stop_poll(self, **payload: Any) -> dict[str, Any]:
+        raise TelegramApiError("Bad Request: poll has already been closed")
+
+
 def make_settings(tmp_path: Path) -> Settings:
     return Settings(
         telegram_bot_token="token",
@@ -509,6 +524,17 @@ def test_close_expired_poll_announces_no_answers_to_announce_topic(tmp_path: Pat
 
     assert closed == 1
     assert telegram.stopped_polls == [{"chat_id": "-1001", "message_id": 321}]
+    assert repository.get_poll("expired-empty")["status"] == "closing"
+    assert telegram.sent_messages == []
+
+    with repository.connect() as connection:
+        connection.execute(
+            "UPDATE polls SET closed_at = ? WHERE poll_id = ?",
+            ("2000-01-01T00:00:00+00:00", "expired-empty"),
+        )
+    finalized = service.close_expired_polls()
+
+    assert finalized == 1
     assert repository.get_poll("expired-empty")["status"] == "closed"
     assert len(telegram.sent_messages) == 1
     announcement = telegram.sent_messages[-1]
@@ -517,6 +543,278 @@ def test_close_expired_poll_announces_no_answers_to_announce_topic(tmp_path: Pat
     assert "network" in announcement["text"]
     assert "normal" in announcement["text"]
     assert "https://t.me/c/1/321" in announcement["text"]
+
+
+def test_answer_after_planned_close_is_recorded_while_telegram_poll_is_active(
+    tmp_path: Path,
+) -> None:
+    service, repository, _telegram = make_service(tmp_path)
+    repository.create_poll(
+        poll_id="late-active",
+        telegram_message_id=321,
+        question_id="q1",
+        topic_key="network",
+        message_thread_id=101,
+        correct_option_id=0,
+        difficulty="normal",
+        opened_at="1999-01-01T00:00:00+00:00",
+        closes_at="2000-01-01T00:00:00+00:00",
+        explanation="",
+    )
+
+    result = service.handle_update(
+        {
+            "update_id": 500,
+            "poll_answer": {
+                "poll_id": "late-active",
+                "user": {"id": 42, "first_name": "Ada"},
+                "option_ids": [0],
+            },
+        }
+    )
+
+    assert result["recorded"] is True
+    assert result["delta"] == 10
+    assert repository.get_score("main", 42)["answered_count"] == 1
+
+
+def test_challenge_answer_is_recorded_during_closing_grace(tmp_path: Path) -> None:
+    service, repository, _telegram = make_service(tmp_path)
+    repository.create_poll(
+        poll_id="late-challenge",
+        telegram_message_id=322,
+        question_id="q1",
+        topic_key="network",
+        message_thread_id=101,
+        correct_option_id=0,
+        difficulty="normal",
+        opened_at="1999-01-01T00:00:00+00:00",
+        closes_at="2000-01-01T00:00:00+00:00",
+        explanation="",
+        requested_by=42,
+        request_cost=10,
+        request_reward=25,
+    )
+    assert repository.mark_poll_closing(
+        "late-challenge",
+        closed_at=utc_now_iso(),
+    ) is True
+
+    result = service.handle_update(
+        {
+            "update_id": 501,
+            "poll_answer": {
+                "poll_id": "late-challenge",
+                "user": {"id": 42, "first_name": "Ada"},
+                "option_ids": [0],
+            },
+        }
+    )
+
+    assert result["recorded"] is True
+    assert result["delta"] == 25
+
+    with repository.connect() as connection:
+        connection.execute(
+            "UPDATE polls SET closed_at = ? WHERE poll_id = ?",
+            ("2000-01-01T00:00:00+00:00", "late-challenge"),
+        )
+    assert service.close_expired_polls() == 1
+    assert repository.get_score("main", 42)["points"] == 25
+    assert repository.get_score("main", 42)["answered_count"] == 1
+
+
+def test_ambiguous_stop_failure_keeps_poll_active_and_blocks_new_question(
+    tmp_path: Path,
+) -> None:
+    service, repository, _telegram = make_service(tmp_path)
+    telegram = AmbiguousStopPollTelegram()
+    service.telegram = telegram  # type: ignore[assignment]
+    repository.create_poll(
+        poll_id="stop-failed",
+        telegram_message_id=323,
+        question_id="q1",
+        topic_key="network",
+        message_thread_id=101,
+        correct_option_id=0,
+        difficulty="normal",
+        opened_at="1999-01-01T00:00:00+00:00",
+        closes_at="2000-01-01T00:00:00+00:00",
+        explanation="",
+    )
+
+    assert service.close_expired_polls() == 0
+    assert repository.get_poll("stop-failed")["status"] == "active"
+
+    post = service.post_question(skip_busy_topics=True)
+
+    assert post.posted is False
+    assert telegram.sent_polls == []
+    assert telegram.stop_attempts == 2
+    assert repository.recent_error_events()[0]["event"] == "stop_poll_failed"
+
+
+def test_already_closed_telegram_poll_enters_delivery_grace(tmp_path: Path) -> None:
+    service, repository, _telegram = make_service(tmp_path)
+    service.telegram = AlreadyClosedStopPollTelegram()  # type: ignore[assignment]
+    repository.create_poll(
+        poll_id="already-closed",
+        telegram_message_id=328,
+        question_id="q1",
+        topic_key="network",
+        message_thread_id=101,
+        correct_option_id=0,
+        difficulty="normal",
+        opened_at="1999-01-01T00:00:00+00:00",
+        closes_at="2000-01-01T00:00:00+00:00",
+        explanation="",
+    )
+
+    assert service.close_expired_polls() == 1
+    assert repository.get_poll("already-closed")["status"] == "closing"
+    assert repository.recent_error_events() == []
+
+
+def test_closed_poll_update_starts_answer_delivery_grace(tmp_path: Path) -> None:
+    service, repository, _telegram = make_service(tmp_path)
+    repository.create_poll(
+        poll_id="telegram-closed",
+        telegram_message_id=324,
+        question_id="q1",
+        topic_key="network",
+        message_thread_id=101,
+        correct_option_id=0,
+        difficulty="normal",
+        opened_at="2026-07-22T00:00:00+00:00",
+        closes_at="2026-07-22T02:00:00+00:00",
+        explanation="",
+    )
+
+    result = service.handle_update(
+        {
+            "update_id": 502,
+            "poll": {
+                "id": "telegram-closed",
+                "is_closed": True,
+                "total_voter_count": 3,
+            },
+        }
+    )
+
+    assert result["closing"] is True
+    assert repository.get_poll("telegram-closed")["status"] == "closing"
+    assert repository.get_poll("telegram-closed")["telegram_voter_count"] == 3
+
+
+def test_poll_answer_count_mismatch_is_reported_after_grace(tmp_path: Path) -> None:
+    service, repository, _telegram = make_service(tmp_path)
+    repository.create_poll(
+        poll_id="missing-answer",
+        telegram_message_id=326,
+        question_id="q1",
+        topic_key="network",
+        message_thread_id=101,
+        correct_option_id=0,
+        difficulty="normal",
+        opened_at="2026-07-22T00:00:00+00:00",
+        closes_at="2026-07-22T02:00:00+00:00",
+        explanation="",
+    )
+    service.handle_update(
+        {
+            "update_id": 504,
+            "poll": {
+                "id": "missing-answer",
+                "is_closed": True,
+                "total_voter_count": 1,
+            },
+        }
+    )
+    with repository.connect() as connection:
+        connection.execute(
+            "UPDATE polls SET closed_at = ? WHERE poll_id = ?",
+            ("2000-01-01T00:00:00+00:00", "missing-answer"),
+        )
+
+    assert service.close_expired_polls() == 1
+
+    error = repository.recent_error_events()[0]
+    assert error["event"] == "poll_answer_count_mismatch"
+    assert "telegram=1, sqlite=0" in error["message"]
+
+
+def test_voter_count_mismatch_extends_grace_and_accepts_delayed_answer(
+    tmp_path: Path,
+) -> None:
+    service, repository, _telegram = make_service(tmp_path)
+    repository.create_poll(
+        poll_id="extended-grace",
+        telegram_message_id=327,
+        question_id="q1",
+        topic_key="network",
+        message_thread_id=101,
+        correct_option_id=0,
+        difficulty="normal",
+        opened_at="2026-07-22T00:00:00+00:00",
+        closes_at="2026-07-22T02:00:00+00:00",
+        explanation="",
+    )
+    closed_at = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+    assert repository.mark_poll_closing(
+        "extended-grace",
+        closed_at=closed_at,
+        telegram_voter_count=1,
+    ) is True
+
+    assert service.close_expired_polls() == 0
+    assert repository.get_poll("extended-grace")["status"] == "closing"
+
+    answer = service.handle_update(
+        {
+            "update_id": 505,
+            "poll_answer": {
+                "poll_id": "extended-grace",
+                "user": {"id": 42, "first_name": "Ada"},
+                "option_ids": [0],
+            },
+        }
+    )
+
+    assert answer["recorded"] is True
+    assert service.close_expired_polls() == 1
+    assert repository.get_poll("extended-grace")["status"] == "closed"
+
+
+def test_answer_after_finalization_is_rejected_and_recorded_as_error(tmp_path: Path) -> None:
+    service, repository, _telegram = make_service(tmp_path)
+    repository.create_poll(
+        poll_id="fully-closed",
+        telegram_message_id=325,
+        question_id="q1",
+        topic_key="network",
+        message_thread_id=101,
+        correct_option_id=0,
+        difficulty="normal",
+        opened_at="1999-01-01T00:00:00+00:00",
+        closes_at="2000-01-01T00:00:00+00:00",
+        explanation="",
+    )
+    repository.mark_poll_closed("fully-closed")
+
+    result = service.handle_update(
+        {
+            "update_id": 503,
+            "poll_answer": {
+                "poll_id": "fully-closed",
+                "user": {"id": 42, "first_name": "Ada"},
+                "option_ids": [0],
+            },
+        }
+    )
+
+    assert result["recorded"] is False
+    assert repository.recent_error_events()[0]["event"] == "poll_answer_rejected"
+    assert "reason=poll_closed" in repository.recent_error_events()[0]["message"]
 
 
 def test_no_answers_announcement_can_be_disabled(tmp_path: Path) -> None:
@@ -1350,15 +1648,23 @@ def test_close_here_announces_no_answers_to_announce_topic(tmp_path: Path) -> No
     )
 
     assert result["closed"] == 1
-    assert len(telegram.sent_messages) == before_messages + 2
-    announcement = telegram.sent_messages[-2]
+    assert len(telegram.sent_messages) == before_messages + 1
     reply = telegram.sent_messages[-1]
+    assert reply["message_thread_id"] == 101
+
+    with repository.connect() as connection:
+        connection.execute(
+            "UPDATE polls SET closed_at = ? WHERE poll_id = ?",
+            ("2000-01-01T00:00:00+00:00", "poll-1"),
+        )
+    assert service.close_expired_polls() == 1
+
+    announcement = telegram.sent_messages[-1]
     assert announcement["message_thread_id"] == 999
     assert announcement["disable_notification"] is True
     assert "network" in announcement["text"]
     assert "normal" in announcement["text"]
     assert "https://t.me/c/1/1" in announcement["text"]
-    assert reply["message_thread_id"] == 101
     assert "Закрыто активных вопросов" in reply["text"]
 
 
@@ -2726,6 +3032,20 @@ def test_cron_maintenance_requires_secret_and_closes_expired_poll(tmp_path: Path
     assert ok.get_json()["closed"] == 1
     assert telegram.sent_polls == []
     assert telegram.stopped_polls == [{"chat_id": "-1001", "message_id": 321}]
+    assert repository.get_poll("expired-poll")["status"] == "closing"
+
+    with repository.connect() as connection:
+        connection.execute(
+            "UPDATE polls SET closed_at = ? WHERE poll_id = ?",
+            ("2000-01-01T00:00:00+00:00", "expired-poll"),
+        )
+    finalized = client.post(
+        "/cron/maintenance",
+        headers={"X-Kvizi-Cron-Secret": "cron-secret"},
+    )
+
+    assert finalized.status_code == 200
+    assert finalized.get_json()["closed"] == 1
     assert repository.get_poll("expired-poll")["status"] == "closed"
     assert repository.latest_cron_run()["status"] == "maintenance_closed"
 

@@ -85,6 +85,7 @@ def test_send_poll_uses_current_bot_api_payload(monkeypatch: Any) -> None:
         options=["One", "Two"],
         correct_option_id=1,
         explanation="Because",
+        open_period=7200,
         message_thread_id=10,
         reply_markup={"inline_keyboard": []},
     )
@@ -92,6 +93,7 @@ def test_send_poll_uses_current_bot_api_payload(monkeypatch: Any) -> None:
     payload = post_calls[0]["json"]
     assert payload["options"] == [{"text": "One"}, {"text": "Two"}]
     assert payload["correct_option_ids"] == [1]
+    assert payload["open_period"] == 7200
     assert "correct_option_id" not in payload
 
 
