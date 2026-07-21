@@ -1266,6 +1266,66 @@ def test_admin_prod_check_treats_transient_telegram_errors_as_info(tmp_path: Pat
     assert "[FAIL]" not in text
 
 
+def test_admin_prod_check_warns_for_final_answer_delivery_mismatch(tmp_path: Path) -> None:
+    service, repository, telegram = make_service(tmp_path)
+    repository.set_bot_setting("announce_thread_id", "999")
+    now = datetime.now(timezone.utc)
+    for index, status in enumerate(
+        ("posted", "maintenance_ok", "daily_posted", "backup_sent"),
+        start=1,
+    ):
+        repository.record_cron_run(
+            (now - timedelta(minutes=index + 1)).isoformat(),
+            (now - timedelta(minutes=index)).isoformat(),
+            status,
+            "ok",
+        )
+    repository.create_poll(
+        poll_id="prod-check-mismatch",
+        telegram_message_id=557,
+        question_id="q1",
+        topic_key="network",
+        message_thread_id=101,
+        correct_option_id=0,
+        difficulty="normal",
+        opened_at=(now - timedelta(hours=2)).isoformat(),
+        closes_at=(now + timedelta(hours=1)).isoformat(),
+        explanation="",
+    )
+    repository.record_answer(
+        season="main",
+        poll_id="prod-check-mismatch",
+        user={"id": 42, "first_name": "Ada"},
+        option_ids=[0],
+        now_iso=(now - timedelta(hours=1)).isoformat(),
+    )
+    assert repository.mark_poll_closing(
+        "prod-check-mismatch",
+        closed_at=now.isoformat(),
+        telegram_voter_count=2,
+    ) is True
+    repository.mark_poll_closed("prod-check-mismatch")
+
+    result = service.handle_update(
+        {
+            "update_id": 98,
+            "message": {
+                "message_id": 86,
+                "message_thread_id": 101,
+                "chat": {"id": "-1001"},
+                "from": {"id": 7, "first_name": "Admin"},
+                "text": "/kvizi_prod_check",
+            },
+        }
+    )
+
+    assert result["command"] == "/kvizi_prod_check"
+    text = telegram.sent_messages[-1]["text"]
+    assert "Prod-check Квизи: WARN" in text
+    assert "[WARN] аудит ответов: подтверждённых расхождений 1" in text
+    assert "/kvizi_recent и /kvizi_errors" in text
+
+
 def test_post_question_sends_announcement_with_private_group_link(tmp_path: Path) -> None:
     service, repository, telegram = make_service(tmp_path)
     repository.set_bot_setting("announce_thread_id", "999")
@@ -1833,10 +1893,90 @@ def test_admin_recent_reports_recent_questions_and_answers(tmp_path: Path) -> No
     assert result["command"] == "/kvizi_recent"
     text = telegram.sent_messages[-1]["text"]
     assert "Последние вопросы Квизи:" in text
-    assert "05.07.2026 23:00:00 MSK | network normal | active" in text
+    assert (
+        "05.07.2026 23:00:00 MSK | network normal | active | "
+        "Telegram/БД: —/2 (опрос открыт)"
+    ) in text
     assert "ответов 2, верно/ошибки 1/1" in text
     assert "@ada" in text
     assert "Bob" in text
+
+
+def test_admin_recent_reports_answer_delivery_mismatch_states(tmp_path: Path) -> None:
+    service, repository, _telegram = make_service(tmp_path)
+    repository.create_poll(
+        poll_id="poll-delivery-audit",
+        telegram_message_id=556,
+        question_id="q1",
+        topic_key="network",
+        message_thread_id=101,
+        correct_option_id=0,
+        difficulty="normal",
+        opened_at="2026-07-05T21:00:00+00:00",
+        closes_at="2999-01-01T00:00:00+00:00",
+        explanation="",
+    )
+    repository.record_answer(
+        season="main",
+        poll_id="poll-delivery-audit",
+        user={"id": 42, "first_name": "Ada"},
+        option_ids=[0],
+        now_iso="2026-07-05T21:00:10+00:00",
+    )
+    assert repository.mark_poll_closing(
+        "poll-delivery-audit",
+        closed_at=utc_now_iso(),
+        telegram_voter_count=2,
+    ) is True
+
+    closing_text = service._format_recent()
+    assert "Telegram/БД: 2/1 (ожидаем доставку)" in closing_text
+
+    repository.mark_poll_closed("poll-delivery-audit")
+    closed_text = service._format_recent()
+    assert "Telegram/БД: 2/1 (РАСХОЖДЕНИЕ)" in closed_text
+    assert service._poll_answer_audit_text(
+        {"status": "closed", "telegram_voter_count": 1, "answers": [{}]}
+    ) == "Telegram/БД: 1/1 (OK)"
+    assert service._poll_answer_audit_text(
+        {"status": "closed", "telegram_voter_count": None, "answers": []}
+    ) == "Telegram/БД: ?/0 (данных Telegram нет)"
+
+
+def test_recent_poll_summaries_exclude_unanswered_challenge_settlement(tmp_path: Path) -> None:
+    _service, repository, _telegram = make_service(tmp_path)
+    repository.create_poll(
+        poll_id="unanswered-challenge-audit",
+        telegram_message_id=558,
+        question_id="q1",
+        topic_key="network",
+        message_thread_id=101,
+        correct_option_id=0,
+        difficulty="normal",
+        opened_at="2026-07-05T22:00:00+00:00",
+        closes_at="2026-07-05T23:00:00+00:00",
+        explanation="",
+        requested_by=42,
+        request_cost=10,
+        request_reward=25,
+    )
+    assert repository.mark_poll_closing(
+        "unanswered-challenge-audit",
+        closed_at=utc_now_iso(),
+        telegram_voter_count=0,
+    ) is True
+    poll = repository.get_poll("unanswered-challenge-audit")
+    finalized, settlement = repository.finalize_closing_poll(
+        season="main",
+        poll=poll,
+        now_iso=utc_now_iso(),
+    )
+
+    assert finalized is True
+    assert settlement is not None
+    summaries = repository.recent_poll_summaries(limit=1)
+    assert summaries[0]["telegram_voter_count"] == 0
+    assert summaries[0]["answers"] == []
 
 
 def test_admin_errors_reports_error_events_and_failed_cron(tmp_path: Path) -> None:

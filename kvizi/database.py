@@ -635,6 +635,7 @@ class KviziRepository:
                     p.closes_at,
                     p.closed_at,
                     p.status,
+                    p.telegram_voter_count,
                     p.requested_by,
                     p.request_cost,
                     p.request_reward,
@@ -651,7 +652,9 @@ class KviziRepository:
                     ORDER BY opened_at DESC
                     LIMIT ?
                 ) AS p
-                LEFT JOIN answers AS a ON a.poll_id = p.poll_id
+                LEFT JOIN answers AS a
+                  ON a.poll_id = p.poll_id
+                 AND a.selected_option_ids <> ''
                 LEFT JOIN users AS u ON u.user_id = a.user_id
                 ORDER BY p.opened_at DESC, a.answered_at ASC, a.user_id ASC
                 """,
@@ -674,6 +677,7 @@ class KviziRepository:
                     "closes_at": row["closes_at"],
                     "closed_at": row["closed_at"],
                     "status": row["status"],
+                    "telegram_voter_count": row["telegram_voter_count"],
                     "requested_by": row["requested_by"],
                     "request_cost": row["request_cost"],
                     "request_reward": row["request_reward"],
@@ -694,6 +698,57 @@ class KviziRepository:
                 )
 
         return list(summaries.values())
+
+    def poll_answer_delivery_stats(self, since_iso: str) -> dict[str, int]:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                WITH answer_counts AS (
+                    SELECT poll_id, COUNT(*) AS answer_count
+                    FROM answers
+                    WHERE selected_option_ids <> ''
+                    GROUP BY poll_id
+                )
+                SELECT
+                    COUNT(*) AS completed_count,
+                    COALESCE(SUM(
+                        CASE WHEN p.telegram_voter_count IS NOT NULL THEN 1 ELSE 0 END
+                    ), 0) AS audited_count,
+                    COALESCE(SUM(
+                        CASE WHEN p.telegram_voter_count IS NULL THEN 1 ELSE 0 END
+                    ), 0) AS unknown_count,
+                    COALESCE(SUM(
+                        CASE
+                            WHEN p.status = 'closing'
+                             AND p.telegram_voter_count IS NOT NULL
+                             AND p.telegram_voter_count <> COALESCE(a.answer_count, 0)
+                            THEN 1 ELSE 0
+                        END
+                    ), 0) AS pending_mismatch_count,
+                    COALESCE(SUM(
+                        CASE
+                            WHEN p.status = 'closed'
+                             AND p.telegram_voter_count IS NOT NULL
+                             AND p.telegram_voter_count <> COALESCE(a.answer_count, 0)
+                            THEN 1 ELSE 0
+                        END
+                    ), 0) AS final_mismatch_count
+                FROM polls AS p
+                LEFT JOIN answer_counts AS a ON a.poll_id = p.poll_id
+                WHERE p.status IN ('closing', 'closed')
+                  AND p.closed_at >= ?
+                """,
+                (since_iso,),
+            ).fetchone()
+        if row is None:
+            return {
+                "completed_count": 0,
+                "audited_count": 0,
+                "unknown_count": 0,
+                "pending_mismatch_count": 0,
+                "final_mismatch_count": 0,
+            }
+        return {key: int(row[key]) for key in row.keys()}
 
     def question_answer_stats(self) -> dict[str, dict[str, Any]]:
         with self.connect() as connection:

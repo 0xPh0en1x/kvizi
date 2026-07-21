@@ -1227,6 +1227,38 @@ class KviziService:
         else:
             add("OK", "активные poll: нет")
 
+        delivery_stats = self.repository.poll_answer_delivery_stats(
+            (now - timedelta(hours=PROD_CHECK_RECENT_HOURS)).isoformat()
+        )
+        audited_count = delivery_stats["audited_count"]
+        pending_mismatches = delivery_stats["pending_mismatch_count"]
+        final_mismatches = delivery_stats["final_mismatch_count"]
+        matched_count = audited_count - pending_mismatches - final_mismatches
+        if final_mismatches:
+            add(
+                "WARN",
+                f"аудит ответов: подтверждённых расхождений {final_mismatches}; "
+                "смотри /kvizi_recent и /kvizi_errors",
+            )
+        if pending_mismatches:
+            add(
+                "INFO",
+                f"аудит ответов: ожидают доставку {pending_mismatches}; смотри /kvizi_recent",
+            )
+        if matched_count:
+            add("OK", f"аудит ответов: Telegram/БД совпали для {matched_count} poll")
+        if delivery_stats["unknown_count"]:
+            add(
+                "INFO",
+                "аудит ответов: нет данных Telegram для "
+                f"{delivery_stats['unknown_count']} poll; смотри /kvizi_recent",
+            )
+        if delivery_stats["completed_count"] == 0:
+            add(
+                "INFO",
+                f"аудит ответов: за {PROD_CHECK_RECENT_HOURS}ч завершённых poll нет",
+            )
+
         cron_checks = (
             ("cron/tick", ("posted", "skipped", "failed")),
             (
@@ -1351,10 +1383,27 @@ class KviziService:
             lines.append(
                 f"- {self._short_dt(str(poll['opened_at']))} | "
                 f"{poll['topic_key']} {poll['difficulty']} | "
-                f"{poll['status']} | {answer_text}{challenge}"
+                f"{poll['status']} | {self._poll_answer_audit_text(poll)} | "
+                f"{answer_text}{challenge}"
             )
 
         return "\n".join(lines)
+
+    def _poll_answer_audit_text(self, poll: dict[str, Any]) -> str:
+        answer_count = len(poll["answers"])
+        status = str(poll["status"])
+        telegram_voter_count = poll.get("telegram_voter_count")
+        if status == "active":
+            return f"Telegram/БД: —/{answer_count} (опрос открыт)"
+        if telegram_voter_count is None:
+            return f"Telegram/БД: ?/{answer_count} (данных Telegram нет)"
+
+        telegram_count = int(telegram_voter_count)
+        if telegram_count == answer_count:
+            return f"Telegram/БД: {telegram_count}/{answer_count} (OK)"
+        if status == "closing" and telegram_count > answer_count:
+            return f"Telegram/БД: {telegram_count}/{answer_count} (ожидаем доставку)"
+        return f"Telegram/БД: {telegram_count}/{answer_count} (РАСХОЖДЕНИЕ)"
 
     def _format_errors(self) -> str:
         events = self.repository.recent_error_events(limit=10)

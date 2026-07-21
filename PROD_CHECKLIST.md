@@ -84,6 +84,11 @@ Expected:
   one-hour delivery grace or referenced an unknown poll and should be investigated.
 - `poll_answer_count_mismatch` names a poll whose Telegram voter total is still
   larger than the answers stored in SQLite after the extended 24-hour grace.
+- `/kvizi_recent` shows `Telegram/БД` for completed polls: `OK` means the counts
+  match, `ожидаем доставку` means the grace period is still active, and
+  `РАСХОЖДЕНИЕ` requires investigation.
+- `/kvizi_prod_check` warns when a finalized mismatch exists in the recent
+  production window.
 
 After test runs, check:
 

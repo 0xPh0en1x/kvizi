@@ -18,6 +18,9 @@
 - Added `poll_answer_rejected` diagnostics for answers that arrive after finalization.
 - Extended answer delivery grace to 24 hours when Telegram and SQLite voter totals differ.
 - Added Telegram-voter versus SQLite-answer mismatch diagnostics at poll finalization.
+- Added Telegram/SQLite answer-delivery audit states to `/kvizi_recent` and a
+  finalized-mismatch warning to `/kvizi_prod_check`.
+- Excluded synthetic unanswered-challenge settlements from human answer counts.
 
 ## v1 local prerelease - 2026-07-06
 
@@ -77,7 +80,7 @@
 Last local verification:
 
 ```text
-python -m pytest -q -> 110 passed
+python -m pytest -q -> 113 passed
 python scripts/validate_questions.py -> OK, warnings expected for sample CSV
 python scripts/smoke_check.py -> failures=0, warnings expected locally
 ```

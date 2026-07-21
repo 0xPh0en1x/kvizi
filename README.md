@@ -151,7 +151,7 @@ topic из текущего CSV.
 - `/kvizi_help_admin` — короткая справка по админ-командам и cron-ручкам
 - `/kvizi_bind <topic_key> <weight>` — выполнить внутри нужного топика
 - `/kvizi_config` — показать текущие очки и стоимость/награду вызовов из env
-- `/kvizi_recent` — показать последние вопросы, ответы и результаты
+- `/kvizi_recent` — показать последние вопросы, ответы и аудит голосов Telegram/SQLite
 - `/kvizi_errors` — показать последние ошибки Telegram/cron
 - `/kvizi_review` — показать вопросы с подозрительной статистикой или пустыми explanation/source
 - `/kvizi_status` — показать вопросы, топики, активные poll/challenge и последний cron
