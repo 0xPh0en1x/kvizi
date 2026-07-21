@@ -1284,6 +1284,10 @@ class KviziService:
             for event in self.repository.recent_error_events(limit=3)
             if self._is_recent_iso(str(event["created_at"]), now, PROD_CHECK_RECENT_HOURS)
         ]
+        recent_errors, _cron_event_duplicates = self._without_duplicate_cron_events(
+            recent_errors,
+            recent_failed,
+        )
         transient_errors = [
             event for event in recent_errors if self._is_transient_error_event(event)
         ]
@@ -1406,54 +1410,121 @@ class KviziService:
         return f"Telegram/БД: {telegram_count}/{answer_count} (РАСХОЖДЕНИЕ)"
 
     def _format_errors(self) -> str:
-        events = self.repository.recent_error_events(limit=10)
-        failed_cron = self.repository.recent_failed_cron_runs(limit=10)
-        lines = ["Последние ошибки Квизи:"]
-
-        if not events and not failed_cron:
-            lines.append("- ошибок нет")
-            return "\n".join(lines)
-
-        transient_events = [
-            event for event in events if self._is_transient_error_event(event)
-        ]
-        actionable_events = [
-            event for event in events if not self._is_transient_error_event(event)
-        ]
-        lines.append(
-            "Сводка: "
-            f"transient Telegram/proxy={len(transient_events)}, "
-            f"прочие events={len(actionable_events)}, "
-            f"failed cron={len(failed_cron)}"
+        now = datetime.now(timezone.utc)
+        cutoff_iso = (now - timedelta(hours=PROD_CHECK_RECENT_HOURS)).isoformat()
+        fresh_failed_cron = self.repository.recent_failed_cron_runs(
+            limit=10,
+            since_iso=cutoff_iso,
+        )
+        fresh_events, fresh_duplicates = self._without_duplicate_cron_events(
+            self.repository.recent_error_events(limit=10, since_iso=cutoff_iso),
+            fresh_failed_cron,
+        )
+        historical_failed_cron = self.repository.recent_failed_cron_runs(
+            limit=3,
+            before_iso=cutoff_iso,
+        )
+        historical_events, historical_duplicates = (
+            self._without_duplicate_cron_events(
+                self.repository.recent_error_events(limit=3, before_iso=cutoff_iso),
+                historical_failed_cron,
+            )
         )
 
-        if actionable_events:
-            lines.append("Требуют внимания:")
-            for event in actionable_events[:5]:
-                lines.append(
-                    f"- {self._short_dt(str(event['created_at']))} | "
-                    f"{event['source']}/{event['event']}: "
-                    f"{self._compact_error_message(str(event['message']))}"
+        lines = ["Ошибки Квизи:"]
+        transient_events = [
+            event for event in fresh_events if self._is_transient_error_event(event)
+        ]
+        actionable_events = [
+            event for event in fresh_events if not self._is_transient_error_event(event)
+        ]
+        if not fresh_events and not fresh_failed_cron:
+            lines.append(
+                f"Свежие за {PROD_CHECK_RECENT_HOURS}ч: актуальных ошибок нет."
+            )
+        else:
+            lines.append(
+                f"Свежие за {PROD_CHECK_RECENT_HOURS}ч: "
+                f"требуют внимания={len(actionable_events)}, "
+                f"transient Telegram/proxy={len(transient_events)}, "
+                f"failed cron={len(fresh_failed_cron)}"
+            )
+            if not actionable_events and not fresh_failed_cron:
+                lines.append("Актуальных проблем, требующих внимания, нет.")
+            if actionable_events:
+                lines.append("Требуют внимания:")
+                lines.extend(
+                    self._format_error_event(event) for event in actionable_events[:5]
                 )
+            if transient_events:
+                lines.append("Временные Telegram/proxy:")
+                lines.extend(
+                    self._format_error_event(event) for event in transient_events[:5]
+                )
+            if fresh_failed_cron:
+                lines.append("Cron:")
+                lines.extend(
+                    self._format_failed_cron(run) for run in fresh_failed_cron[:5]
+                )
+            if fresh_duplicates:
+                lines.append(f"Скрыто точных дублей cron/event: {fresh_duplicates}")
 
-        if transient_events:
-            lines.append("Временные Telegram/proxy:")
-            for event in transient_events[:5]:
-                lines.append(
-                    f"- {self._short_dt(str(event['created_at']))} | "
-                    f"{event['source']}/{event['event']}: "
-                    f"{self._compact_error_message(str(event['message']))}"
-                )
-
-        if failed_cron:
-            lines.append("Cron:")
-            for run in failed_cron:
-                lines.append(
-                    f"- {self._short_dt(str(run['finished_at']))} | "
-                    f"{run['status']}: {self._compact_error_message(str(run['message']))}"
-                )
+        if historical_events or historical_failed_cron:
+            lines.append("")
+            lines.append(
+                f"История старше {PROD_CHECK_RECENT_HOURS}ч "
+                "(не влияет на prod-check):"
+            )
+            lines.extend(self._format_error_event(event) for event in historical_events)
+            lines.extend(self._format_failed_cron(run) for run in historical_failed_cron)
+            if historical_duplicates:
+                lines.append(f"Скрыто точных дублей cron/event: {historical_duplicates}")
 
         return "\n".join(lines)
+
+    def _without_duplicate_cron_events(
+        self,
+        events: list[dict[str, Any]],
+        failed_cron: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], int]:
+        kept: list[dict[str, Any]] = []
+        duplicates = 0
+        for event in events:
+            duplicate = str(event.get("source") or "").lower() == "cron" and any(
+                str(event.get("created_at") or "") == str(run.get("finished_at") or "")
+                and self._same_error_message(
+                    str(event.get("message") or ""),
+                    str(run.get("message") or ""),
+                )
+                for run in failed_cron
+            )
+            if duplicate:
+                duplicates += 1
+            else:
+                kept.append(event)
+        return kept, duplicates
+
+    def _same_error_message(self, first: str, second: str) -> bool:
+        left = " ".join(first.strip().split())
+        right = " ".join(second.strip().split())
+        return (
+            left == right
+            or (left.endswith("...") and right.startswith(left[:-3]))
+            or (right.endswith("...") and left.startswith(right[:-3]))
+        )
+
+    def _format_error_event(self, event: dict[str, Any]) -> str:
+        return (
+            f"- {self._short_dt(str(event['created_at']))} | "
+            f"{event['source']}/{event['event']}: "
+            f"{self._compact_error_message(str(event['message']))}"
+        )
+
+    def _format_failed_cron(self, run: dict[str, Any]) -> str:
+        return (
+            f"- {self._short_dt(str(run['finished_at']))} | "
+            f"{run['status']}: {self._compact_error_message(str(run['message']))}"
+        )
 
     def _is_transient_error_event(self, event: dict[str, Any]) -> bool:
         source = str(event.get("source") or "").lower()

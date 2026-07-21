@@ -138,7 +138,7 @@ ADMIN_HELP_TEXT = (
     "/kvizi_status - подробный статус\n"
     "/kvizi_status_compact - короткий статус\n"
     "/kvizi_recent - последние вопросы и ответы\n"
-    "/kvizi_errors - последние ошибки Telegram/cron\n"
+    "/kvizi_errors - свежие ошибки и история Telegram/cron\n"
     "/kvizi_review - ревизия качества вопросов\n"
     "/kvizi_voice_preview - пример текущего голоса Квизи\n"
     "/kvizi_export [--full] - выгрузить состояние JSON\n"

@@ -1266,6 +1266,54 @@ def test_admin_prod_check_treats_transient_telegram_errors_as_info(tmp_path: Pat
     assert "[FAIL]" not in text
 
 
+def test_admin_prod_check_does_not_double_report_exact_cron_failure(tmp_path: Path) -> None:
+    service, repository, telegram = make_service(tmp_path)
+    repository.set_bot_setting("announce_thread_id", "999")
+    now = datetime.now(timezone.utc)
+    for index, status in enumerate(
+        ("maintenance_ok", "daily_posted", "backup_sent"),
+        start=1,
+    ):
+        repository.record_cron_run(
+            (now - timedelta(minutes=index + 1)).isoformat(),
+            (now - timedelta(minutes=index)).isoformat(),
+            status,
+            "ok",
+        )
+    failed_at = (now - timedelta(seconds=30)).isoformat()
+    repository.record_cron_run(
+        (now - timedelta(minutes=1)).isoformat(),
+        failed_at,
+        "failed",
+        "tick exploded",
+    )
+    repository.record_error_event(
+        source="cron",
+        event="tick_failed",
+        message="tick exploded",
+        created_at=failed_at,
+    )
+
+    result = service.handle_update(
+        {
+            "update_id": 971,
+            "message": {
+                "message_id": 851,
+                "message_thread_id": 101,
+                "chat": {"id": "-1001"},
+                "from": {"id": 7, "first_name": "Admin"},
+                "text": "/kvizi_prod_check",
+            },
+        }
+    )
+
+    assert result["command"] == "/kvizi_prod_check"
+    text = telegram.sent_messages[-1]["text"]
+    assert "Prod-check Квизи: FAIL" in text
+    assert "свежие failed cron: 1" in text
+    assert "свежие error events" not in text
+
+
 def test_admin_prod_check_warns_for_final_answer_delivery_mismatch(tmp_path: Path) -> None:
     service, repository, telegram = make_service(tmp_path)
     repository.set_bot_setting("announce_thread_id", "999")
@@ -1981,6 +2029,8 @@ def test_recent_poll_summaries_exclude_unanswered_challenge_settlement(tmp_path:
 
 def test_admin_errors_reports_error_events_and_failed_cron(tmp_path: Path) -> None:
     service, repository, telegram = make_service(tmp_path)
+    now = datetime.now(timezone.utc)
+    transient_at = (now - timedelta(minutes=5)).isoformat()
     repository.record_error_event(
         source="telegram",
         event="send_message_failed",
@@ -1991,13 +2041,32 @@ def test_admin_errors_reports_error_events_and_failed_cron(tmp_path: Path) -> No
             "(Caused by ProxyError('Unable to connect to proxy', "
             "OSError('Tunnel connection failed: 503 Service Unavailable')))"
         ),
-        created_at="2026-07-05T20:00:00+00:00",
+        created_at=transient_at,
+    )
+    cron_finished_at = (now - timedelta(minutes=4)).isoformat()
+    repository.record_cron_run(
+        (now - timedelta(minutes=5)).isoformat(),
+        cron_finished_at,
+        "failed",
+        "tick exploded",
+    )
+    repository.record_error_event(
+        source="cron",
+        event="tick_failed",
+        message="tick exploded",
+        created_at=cron_finished_at,
+    )
+    repository.record_error_event(
+        source="telegram",
+        event="old_send_failed",
+        message="old event kept for history",
+        created_at=(now - timedelta(hours=48)).isoformat(),
     )
     repository.record_cron_run(
-        "2026-07-05T20:10:00+00:00",
-        "2026-07-05T20:10:01+00:00",
+        (now - timedelta(hours=49, minutes=1)).isoformat(),
+        (now - timedelta(hours=49)).isoformat(),
         "backup_failed",
-        "bot can't initiate conversation",
+        "old cron kept for history",
     )
 
     result = service.handle_update(
@@ -2015,14 +2084,41 @@ def test_admin_errors_reports_error_events_and_failed_cron(tmp_path: Path) -> No
 
     assert result["command"] == "/kvizi_errors"
     text = telegram.sent_messages[-1]["text"]
-    assert "Последние ошибки Квизи:" in text
-    assert "Сводка: transient Telegram/proxy=1, прочие events=0, failed cron=1" in text
+    assert "Ошибки Квизи:" in text
+    assert (
+        "Свежие за 36ч: требуют внимания=0, "
+        "transient Telegram/proxy=1, failed cron=1"
+    ) in text
     assert "Временные Telegram/proxy:" in text
-    assert "05.07.2026 23:00:00 MSK | telegram/send_message_failed: временный Telegram/proxy сбой (503, proxy, after retries)" in text
+    assert (
+        "telegram/send_message_failed: "
+        "временный Telegram/proxy сбой (503, proxy, after retries)"
+    ) in text
     assert "HTTPSConnectionPool" not in text
     assert "/bot" not in text
     assert "Cron:" in text
-    assert "05.07.2026 23:10:01 MSK | backup_failed: bot can't initiate conversation" in text
+    assert "failed: tick exploded" in text
+    assert "Скрыто точных дублей cron/event: 1" in text
+    assert "cron/tick_failed" not in text
+    assert "История старше 36ч (не влияет на prod-check):" in text
+    assert "telegram/old_send_failed: old event kept for history" in text
+    assert "backup_failed: old cron kept for history" in text
+
+
+def test_admin_errors_marks_old_entries_as_non_actionable_history(tmp_path: Path) -> None:
+    service, repository, _telegram = make_service(tmp_path)
+    repository.record_error_event(
+        source="telegram",
+        event="old_proxy_failure",
+        message="historical only",
+        created_at=(datetime.now(timezone.utc) - timedelta(hours=48)).isoformat(),
+    )
+
+    text = service._format_errors()
+
+    assert "Свежие за 36ч: актуальных ошибок нет." in text
+    assert "История старше 36ч (не влияет на prod-check):" in text
+    assert "telegram/old_proxy_failure: historical only" in text
 
 
 def test_admin_review_reports_suspicious_questions(tmp_path: Path) -> None:

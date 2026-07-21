@@ -1086,17 +1086,32 @@ class KviziRepository:
             ).fetchone()
         return _row_to_dict(row)
 
-    def recent_failed_cron_runs(self, limit: int = 10) -> list[dict[str, Any]]:
+    def recent_failed_cron_runs(
+        self,
+        limit: int = 10,
+        *,
+        since_iso: str | None = None,
+        before_iso: str | None = None,
+    ) -> list[dict[str, Any]]:
+        filters = ["(status LIKE '%failed%' OR status = 'backup_partial')"]
+        parameters: list[Any] = []
+        if since_iso is not None:
+            filters.append("finished_at >= ?")
+            parameters.append(since_iso)
+        if before_iso is not None:
+            filters.append("finished_at < ?")
+            parameters.append(before_iso)
+        parameters.append(limit)
         with self.connect() as connection:
             rows = connection.execute(
-                """
+                f"""
                 SELECT *
                 FROM cron_runs
-                WHERE status LIKE '%failed%' OR status = 'backup_partial'
+                WHERE {' AND '.join(filters)}
                 ORDER BY id DESC
                 LIMIT ?
                 """,
-                (limit,),
+                tuple(parameters),
             ).fetchall()
         return [dict(row) for row in rows]
 
@@ -1125,16 +1140,33 @@ class KviziRepository:
                 ),
             )
 
-    def recent_error_events(self, limit: int = 10) -> list[dict[str, Any]]:
+    def recent_error_events(
+        self,
+        limit: int = 10,
+        *,
+        since_iso: str | None = None,
+        before_iso: str | None = None,
+    ) -> list[dict[str, Any]]:
+        filters: list[str] = []
+        parameters: list[Any] = []
+        if since_iso is not None:
+            filters.append("created_at >= ?")
+            parameters.append(since_iso)
+        if before_iso is not None:
+            filters.append("created_at < ?")
+            parameters.append(before_iso)
+        where_clause = f"WHERE {' AND '.join(filters)}" if filters else ""
+        parameters.append(limit)
         with self.connect() as connection:
             rows = connection.execute(
-                """
+                f"""
                 SELECT *
                 FROM error_events
+                {where_clause}
                 ORDER BY id DESC
                 LIMIT ?
                 """,
-                (limit,),
+                tuple(parameters),
             ).fetchall()
         return [dict(row) for row in rows]
 

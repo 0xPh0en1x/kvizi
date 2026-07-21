@@ -21,6 +21,10 @@
 - Added Telegram/SQLite answer-delivery audit states to `/kvizi_recent` and a
   finalized-mismatch warning to `/kvizi_prod_check`.
 - Excluded synthetic unanswered-challenge settlements from human answer counts.
+- Split `/kvizi_errors` into a fresh 36-hour operational window and retained
+  history that is explicitly marked as not affecting prod-check.
+- Collapsed exact duplicate cron event/run pairs in the admin error report and
+  prod-check.
 
 ## v1 local prerelease - 2026-07-06
 
@@ -80,7 +84,7 @@
 Last local verification:
 
 ```text
-python -m pytest -q -> 113 passed
+python -m pytest -q -> 115 passed
 python scripts/validate_questions.py -> OK, warnings expected for sample CSV
 python scripts/smoke_check.py -> failures=0, warnings expected locally
 ```

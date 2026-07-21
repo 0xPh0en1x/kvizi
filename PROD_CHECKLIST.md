@@ -89,6 +89,9 @@ Expected:
   `РАСХОЖДЕНИЕ` requires investigation.
 - `/kvizi_prod_check` warns when a finalized mismatch exists in the recent
   production window.
+- `/kvizi_errors` separates the same 36-hour production window from older
+  history. Historical entries are retained but explicitly do not affect
+  prod-check; exact cron event/run duplicates are shown once.
 
 After test runs, check:
 
