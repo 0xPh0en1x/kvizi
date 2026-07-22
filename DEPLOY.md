@@ -207,10 +207,10 @@ local date.
 https://YOUR_USERNAME.pythonanywhere.com/cron/backup
 ```
 
-Once per day or every few days. Sends JSON state export to every user id from
-`KVIZI_ADMIN_IDS`. Each admin must open a private chat with the bot first,
-otherwise Telegram will reject that delivery while other admins can still receive
-the backup.
+Once per day or every few days. Creates an integrity-checked, complete SQLite
+snapshot and sends it to every user id from `KVIZI_ADMIN_IDS`. Each admin must
+open a private chat with the bot first, otherwise Telegram will reject that
+delivery while other admins can still receive the backup.
 
 ## 7. Rollback and maintenance
 
@@ -235,3 +235,24 @@ CLI export:
 ```bash
 python scripts/export_state.py
 ```
+
+The JSON export is diagnostic and limits several history tables. For disaster
+recovery, download the `.sqlite3` file sent by `/cron/backup` and validate it:
+
+```bash
+python scripts/restore_database.py --input /path/to/kvizi-backup.sqlite3
+```
+
+To restore it, first disable the PythonAnywhere Web app and all Kvizi jobs in
+cron-job.org. Then run:
+
+```bash
+python scripts/restore_database.py \
+  --input /path/to/kvizi-backup.sqlite3 \
+  --apply \
+  --confirm-app-stopped
+```
+
+The script validates the snapshot and saves the current database under
+`backups/database/` before replacing it. Enable/reload the Web app, re-enable
+cron jobs, and verify `/health`, `/kvizi_version`, and `/kvizi_prod_check`.

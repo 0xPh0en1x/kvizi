@@ -79,7 +79,8 @@ Expected:
 - HTTP `200 OK`.
 - `maintenance` can close `0` polls.
 - `daily` can skip if today's summary was already sent.
-- `backup` sends JSON to admins who opened a private chat with the bot.
+- `backup` sends an integrity-checked `.sqlite3` snapshot to admins who opened
+  a private chat with the bot.
 - `poll_answer_rejected` in `/kvizi_errors` means an answer arrived after the
   one-hour delivery grace or referenced an unknown poll and should be investigated.
 - `poll_answer_count_mismatch` names a poll whose Telegram voter total is still
@@ -120,8 +121,19 @@ Questions rollback:
 /kvizi_questions_status
 ```
 
-State backup:
+Diagnostic JSON export:
 
 ```text
 /kvizi_export
 ```
+
+Disaster-recovery snapshot: download the latest `.sqlite3` file from the bot
+and validate it without changing production:
+
+```bash
+python scripts/restore_database.py --input /path/to/kvizi-backup.sqlite3
+```
+
+Only restore while the Web app and all Kvizi cron jobs are stopped. The apply
+command requires the explicit `--confirm-app-stopped` flag and saves the current
+database under `backups/database/` first; see `DEPLOY.md` for the full procedure.

@@ -16,6 +16,7 @@ from kvizi import __version__
 from kvizi import copy
 from kvizi.config import PROJECT_ROOT, Settings
 from kvizi.database import KviziRepository, utc_now_iso
+from kvizi.database_backup import create_database_backup
 from kvizi.export_state import export_state
 from kvizi.question_report import build_report, find_duplicate_ids, format_report_for_telegram
 from kvizi.questions import DIFFICULTY_PATTERN, QUESTION_COLUMNS, Question, QuestionBank, load_questions
@@ -66,6 +67,7 @@ class StateExportFile:
     filename: str
     content: bytes
     caption: str
+    mime_type: str = "application/json"
 
 
 @dataclass(frozen=True)
@@ -164,10 +166,7 @@ class KviziService:
                 self.repository.release_operation(operation_key)
 
     def post_backup_export(self) -> BackupExportResult:
-        export_file = self._build_state_export(
-            filename_prefix="kvizi-backup",
-            caption_prefix="Backup Квизи",
-        )
+        export_file = self._build_database_backup()
         admin_ids = sorted(self.settings.admin_ids)
         sent_count = 0
         errors: list[str] = []
@@ -179,7 +178,7 @@ class KviziService:
                     filename=export_file.filename,
                     content=export_file.content,
                     caption=export_file.caption,
-                    mime_type="application/json",
+                    mime_type=export_file.mime_type,
                 )
             except TelegramApiError as exc:
                 error_message = f"{admin_id}: {exc}"
@@ -817,7 +816,27 @@ class KviziService:
             filename=export_file.filename,
             content=export_file.content,
             caption=export_file.caption,
-            mime_type="application/json",
+            mime_type=export_file.mime_type,
+        )
+
+    def _build_database_backup(self) -> StateExportFile:
+        backup = create_database_backup(self.settings.database_path)
+        exported_at = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        filename = f"kvizi-backup-{exported_at}.sqlite3"
+        counts = backup.table_counts
+        caption = (
+            "Backup Квизи SQLite: integrity=ok, "
+            f"users={counts['users']}, "
+            f"scores={counts['scores']}, "
+            f"polls={counts['polls']}, "
+            f"answers={counts['answers']}, "
+            f"sha256={backup.sha256[:12]}"
+        )
+        return StateExportFile(
+            filename=filename,
+            content=backup.content,
+            caption=caption,
+            mime_type="application/vnd.sqlite3",
         )
 
     def _build_state_export(

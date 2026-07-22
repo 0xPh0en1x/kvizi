@@ -2,6 +2,11 @@
 
 ## AI-flavored Kvizi phrases
 
+Status: planned as the next optional feature after database backup/restore.
+Keep the core provider-neutral; an unofficial `g4f` adapter may be experimental,
+but must never be the only configured provider or a runtime dependency of quiz
+delivery.
+
 Idea: use `xtekky/gpt4free` / `g4f` only for stylistic text in Kvizi's voice, not for factual quiz generation.
 
 Good first uses:

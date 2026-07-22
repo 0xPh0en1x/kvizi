@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 import re
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -2941,7 +2942,7 @@ def test_cron_daily_posts_once_and_skips_duplicate(tmp_path: Path) -> None:
     assert _daily_title_matches(telegram.sent_messages[0]["text"])
 
 
-def test_cron_backup_requires_secret_and_sends_json_export_to_admin(tmp_path: Path) -> None:
+def test_cron_backup_requires_secret_and_sends_sqlite_snapshot_to_admin(tmp_path: Path) -> None:
     settings = make_settings(tmp_path)
     repository = KviziRepository(settings.database_path)
     repository.init_db()
@@ -2962,7 +2963,7 @@ def test_cron_backup_requires_secret_and_sends_json_export_to_admin(tmp_path: Pa
     assert payload["failed"] == 0
     assert payload["admin_ids"] == [7]
     assert payload["filename"].startswith("kvizi-backup-")
-    assert payload["filename"].endswith(".json")
+    assert payload["filename"].endswith(".sqlite3")
 
     assert len(telegram.sent_documents) == 1
     document = telegram.sent_documents[0]
@@ -2970,9 +2971,17 @@ def test_cron_backup_requires_secret_and_sends_json_export_to_admin(tmp_path: Pa
     assert "message_thread_id" not in document
     assert document["filename"] == payload["filename"]
     assert "Backup Квизи" in document["caption"]
-    export_payload = json.loads(document["content"].decode("utf-8"))
-    assert export_payload["users"][0]["username"] == "adminuser"
-    assert "processed_updates" not in export_payload
+    assert document["mime_type"] == "application/vnd.sqlite3"
+    assert document["content"].startswith(b"SQLite format 3\x00")
+    backup_path = tmp_path / "received-backup.sqlite3"
+    backup_path.write_bytes(document["content"])
+    with sqlite3.connect(backup_path) as backup_connection:
+        backup_user = backup_connection.execute(
+            "SELECT username FROM users WHERE user_id = 7"
+        ).fetchone()
+        integrity = backup_connection.execute("PRAGMA integrity_check").fetchone()
+    assert backup_user == ("adminuser",)
+    assert integrity == ("ok",)
     assert repository.latest_cron_run()["status"] == "backup_sent"
 
 

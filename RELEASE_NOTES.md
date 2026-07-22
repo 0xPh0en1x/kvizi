@@ -25,6 +25,10 @@
   history that is explicitly marked as not affecting prod-check.
 - Collapsed exact duplicate cron event/run pairs in the admin error report and
   prod-check.
+- Replaced the scheduled limited JSON backup with a complete, integrity-checked
+  SQLite snapshot that includes committed WAL state.
+- Added a validation-first database restore tool with an explicit stopped-app
+  confirmation and an automatic pre-restore backup.
 
 ## v1 local prerelease - 2026-07-06
 
@@ -46,7 +50,7 @@
 - Scoring with base difficulty points, streak bonuses, x2/x3 bets, and non-negative score floor.
 - Challenge questions with cost/reward and unanswered challenge settlement on poll close.
 - Daily summary posting and idempotent `/cron/daily`.
-- Automatic admin JSON backup via `/cron/backup`.
+- Automatic admin SQLite backup via `/cron/backup`.
 - Topic-specific leaderboards via `/top <topic_key>`.
 - Configurable difficulty points and challenge cost/reward via env.
 - Cleaner `/rules` ordering and `/kvizi_config` for checking active scoring config.
@@ -84,7 +88,7 @@
 Last local verification:
 
 ```text
-python -m pytest -q -> 115 passed
+python -m pytest -q -> 118 passed
 python scripts/validate_questions.py -> OK, warnings expected for sample CSV
 python scripts/smoke_check.py -> failures=0, warnings expected locally
 ```

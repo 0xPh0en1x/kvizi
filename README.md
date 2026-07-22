@@ -232,11 +232,49 @@ python scripts/export_state.py --output backup/kvizi-state.json
 /kvizi_export
 ```
 
-Технические `processed_updates` по умолчанию не включаются. Полная выгрузка:
+Технические `processed_updates` по умолчанию не включаются. Расширенная выгрузка:
 
 ```text
 /kvizi_export --full
 ```
+
+JSON-экспорт предназначен для просмотра и диагностики. Последние poll, ответы,
+ставки, cron-запуски и ошибки в нём ограничены по количеству, поэтому он не
+заменяет полный резервный снимок базы.
+
+## Полный SQLite backup и восстановление
+
+`POST /cron/backup` создаёт согласованный SQLite snapshot через штатный backup
+API SQLite, проверяет `integrity_check` и внешние ключи, затем отправляет файл
+`kvizi-backup-<timestamp>.sqlite3` каждому администратору в личный чат. Snapshot
+включает все таблицы и зафиксированные изменения из WAL.
+
+Скачанный файл сначала проверить без изменения рабочей базы:
+
+```bash
+python scripts/restore_database.py --input /path/to/kvizi-backup.sqlite3
+```
+
+Для восстановления на PythonAnywhere:
+
+1. Остановить Web app и временно выключить все cron-job.org задачи Квизи.
+2. Запустить проверку выше.
+3. Применить восстановление:
+
+```bash
+python scripts/restore_database.py \
+  --input /path/to/kvizi-backup.sqlite3 \
+  --apply \
+  --confirm-app-stopped
+```
+
+4. Снова запустить/reload Web app и включить cron-задачи.
+5. Проверить `/health`, `/kvizi_version` и `/kvizi_prod_check`.
+
+Перед заменой скрипт автоматически сохраняет текущую базу в
+`backups/database/kvizi-before-restore-<timestamp>.sqlite3`. Файл
+`questions.csv` в SQLite не хранится и восстанавливается отдельными командами
+`/kvizi_backups` и `/kvizi_restore_questions`.
 
 ## cron-job.org
 
@@ -297,15 +335,16 @@ X-Kvizi-Cron-Secret: <KVIZI_CRON_SECRET>
 `/cron/daily` идемпотентен по локальной дате: если итоги за день уже отправлены,
 повторный вызов вернёт `posted=false` и не продублирует сообщение.
 
-Для автоматического JSON backup можно создать отдельный POST job:
+Для автоматического полного SQLite backup можно создать отдельный POST job:
 
 ```text
 https://YOUR_USERNAME.pythonanywhere.com/cron/backup
 ```
 
-Он отправляет export состояния каждому `user_id` из `KVIZI_ADMIN_IDS`. Админ
-должен заранее открыть личный чат с ботом, иначе Telegram не даст боту начать
-диалог и этот конкретный admin id попадёт в `errors` ответа cron.
+Он отправляет проверенный `.sqlite3` snapshot каждому `user_id` из
+`KVIZI_ADMIN_IDS`. Админ должен заранее открыть личный чат с ботом, иначе
+Telegram не даст боту начать диалог и этот конкретный admin id попадёт в
+`errors` ответа cron.
 
 SQLite при `init_db` переводится в WAL-режим, а каждое соединение получает
 `busy_timeout=5000`, чтобы webhook и cron реже конфликтовали при одновременных
