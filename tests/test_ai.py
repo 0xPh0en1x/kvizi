@@ -47,6 +47,7 @@ def test_groq_provider_returns_completion_and_uses_short_output(monkeypatch: Any
     assert result.model == "llama-3.1-8b-instant"
     assert calls[0]["url"] == ai_module.GROQ_CHAT_COMPLETIONS_URL
     assert calls[0]["headers"]["Authorization"] == "Bearer secret-key"
+    assert calls[0]["json"]["temperature"] == 0.6
     assert calls[0]["json"]["max_completion_tokens"] == 96
     assert calls[0]["timeout"] == 2.5
 
@@ -112,3 +113,24 @@ def test_short_intro_normalizes_whitespace_and_quotes() -> None:
     assert normalize_short_intro(' « Пульт   ожил, вопрос в эфире. » ') == (
         "Пульт ожил, вопрос в эфире."
     )
+
+
+def test_short_intro_rejects_protected_answer_option() -> None:
+    with pytest.raises(AIProviderError) as error:
+        normalize_short_intro(
+            "Похоже, здесь всё решает DNS.",
+            forbidden_phrases=("DNS", "SMTP"),
+        )
+
+    assert error.value.kind == "invalid_output"
+    assert error.value.retryable is False
+
+
+def test_short_intro_rejects_low_quality_pattern() -> None:
+    with pytest.raises(AIProviderError) as error:
+        normalize_short_intro(
+            "Сложное сочетание слов, которое может означать одно, а значит и другое.",
+            rejected_patterns=(r"\bможет\s+означать\b",),
+        )
+
+    assert error.value.kind == "invalid_output"

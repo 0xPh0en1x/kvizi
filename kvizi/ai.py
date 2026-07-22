@@ -94,7 +94,7 @@ class GroqProvider:
                 json={
                     "model": self.model,
                     "messages": messages,
-                    "temperature": 0.9,
+                    "temperature": 0.6,
                     "max_completion_tokens": 96,
                 },
                 timeout=timeout_seconds,
@@ -147,7 +147,13 @@ class GroqProvider:
         )
 
 
-def normalize_short_intro(text: str, *, max_chars: int = 180) -> str:
+def normalize_short_intro(
+    text: str,
+    *,
+    max_chars: int = 180,
+    forbidden_phrases: tuple[str, ...] = (),
+    rejected_patterns: tuple[str, ...] = (),
+) -> str:
     normalized = " ".join(text.strip().strip('"\'«»').split())
     if not normalized:
         raise AIProviderError(
@@ -173,7 +179,34 @@ def normalize_short_intro(text: str, *, max_chars: int = 180) -> str:
             kind="invalid_output",
             retryable=False,
         )
+    normalized_tokens = _normalized_tokens(normalized)
+    for phrase in forbidden_phrases:
+        phrase_tokens = _normalized_tokens(phrase)
+        if phrase_tokens and _contains_token_sequence(normalized_tokens, phrase_tokens):
+            raise AIProviderError(
+                "AI intro contains a protected answer option",
+                kind="invalid_output",
+                retryable=False,
+            )
+    if any(re.search(pattern, normalized, re.IGNORECASE) for pattern in rejected_patterns):
+        raise AIProviderError(
+            "AI intro matches a low-quality generic pattern",
+            kind="invalid_output",
+            retryable=False,
+        )
     return normalized
+
+
+def _normalized_tokens(value: str) -> tuple[str, ...]:
+    return tuple(re.findall(r"[0-9a-zа-яё]+", value.casefold()))
+
+
+def _contains_token_sequence(
+    tokens: tuple[str, ...],
+    candidate: tuple[str, ...],
+) -> bool:
+    width = len(candidate)
+    return any(tokens[index : index + width] == candidate for index in range(len(tokens) - width + 1))
 
 
 def _retry_after_seconds(response: requests.Response) -> float | None:

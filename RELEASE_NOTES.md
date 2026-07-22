@@ -5,6 +5,9 @@
 - Added the first optional Groq-powered host-copy slice. New-question
   announcements now send reliable `copy.py` text first and only then edit the
   normal Telegram message with a validated AI intro.
+- Made AI intros use the published question text while keeping every answer
+  option out of the provider request. Lowered generation temperature and reject
+  answer leaks plus known generic filler, retaining `copy.py` as a quiet fallback.
 - Added durable `ai_enhancement_jobs` in SQLite. Retryable provider failures
   and ambiguous Telegram edit failures are retried by maintenance; saved edit
   candidates are reused without spending another model request.

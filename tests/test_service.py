@@ -2088,7 +2088,7 @@ def test_announcement_retry_stops_after_max_attempts(tmp_path: Path) -> None:
 
 
 def test_ai_question_copy_sends_static_text_then_edits_safe_facts(tmp_path: Path) -> None:
-    provider = FakeAIProvider(["Пульт мигнул зелёным: новый вопрос уже в эфире."])
+    provider = FakeAIProvider(["Имена ищут дорогу к адресам — проверим, кто знает их проводника."])
     service, repository, telegram = make_ai_service(tmp_path, provider)
 
     posted = service.post_question(difficulty="normal")
@@ -2099,13 +2099,52 @@ def test_ai_question_copy_sends_static_text_then_edits_safe_facts(tmp_path: Path
     edited = telegram.edited_messages[0]
     assert edited["chat_id"] == "-1001"
     assert edited["message_id"] == 101
-    assert edited["text"].startswith("Пульт мигнул зелёным")
+    assert edited["text"].startswith("Имена ищут дорогу к адресам")
     assert "Сектор: network · сложность: normal · база: 10" in edited["text"]
     assert edited["text"].endswith("https://t.me/c/1/1")
     assert repository.pending_ai_enhancement_count() == 0
     assert provider.calls[0]["purpose"] == "question_announcement"
     assert provider.calls[0]["timeout_seconds"] == 7.0
-    assert '"base_points": 10' in provider.calls[0]["messages"][1]["content"]
+    system_prompt = provider.calls[0]["messages"][0]["content"]
+    user_prompt = provider.calls[0]["messages"][1]["content"]
+    assert "напрямую связанный с предметом" in system_prompt
+    assert "не называй и не подсказывай варианты" in system_prompt
+    assert '"question": "What resolves names?"' in user_prompt
+    assert '"topic": "network"' in user_prompt
+    assert "DNS" not in user_prompt
+    assert "SMTP" not in user_prompt
+    assert "base_points" not in user_prompt
+    assert "question_link" not in user_prompt
+
+
+@pytest.mark.parametrize(
+    "generated",
+    (
+        "Похоже, здесь всё решает DNS.",
+        "Сложное сочетание слов, которое может означать одно, а значит и другое.",
+    ),
+)
+def test_ai_question_copy_rejects_spoilers_and_low_quality_text(
+    tmp_path: Path,
+    generated: str,
+) -> None:
+    provider = FakeAIProvider([generated])
+    service, repository, telegram = make_ai_service(tmp_path, provider)
+
+    posted = service.post_question(difficulty="normal")
+
+    assert posted.posted is True
+    assert len(telegram.sent_messages) == 1
+    assert telegram.edited_messages == []
+    assert repository.pending_ai_enhancement_count() == 0
+    errors = repository.recent_error_events(limit=1)
+    assert errors[0]["source"] == "ai"
+    assert errors[0]["event"] == "ai_output_rejected"
+    assert "kind=invalid_output" in errors[0]["message"]
+    error_report = service._format_errors()
+    assert "требуют внимания=0" in error_report
+    assert "AI fallback=1" in error_report
+    assert "AI-подводки отклонены, оставлен copy.py:" in error_report
 
 
 def test_retryable_ai_failure_keeps_static_copy_and_edits_later(tmp_path: Path) -> None:
@@ -2117,7 +2156,7 @@ def test_retryable_ai_failure_keeps_static_copy_and_edits_later(tmp_path: Path) 
                 retryable=True,
                 retry_after_seconds=0,
             ),
-            "Квизи дёрнул рубильник: вопрос вышел на сцену.",
+            "Имена снова потеряли адреса — самое время найти виновный протокол.",
         ]
     )
     service, repository, telegram = make_ai_service(tmp_path, provider)
@@ -2140,7 +2179,7 @@ def test_retryable_ai_failure_keeps_static_copy_and_edits_later(tmp_path: Path) 
 
 
 def test_delayed_static_announcement_still_schedules_ai_after_retry(tmp_path: Path) -> None:
-    provider = FakeAIProvider(["Квизи поднял занавес: вопрос уже ждёт ответов."])
+    provider = FakeAIProvider(["Адресная книга сети открыта — осталось понять, кто в ней наводит порядок."])
     service, repository, telegram = make_ai_service(
         tmp_path,
         provider,
@@ -2169,7 +2208,7 @@ def test_delayed_static_announcement_still_schedules_ai_after_retry(tmp_path: Pa
 
 
 def test_ai_candidate_is_reused_when_telegram_edit_needs_retry(tmp_path: Path) -> None:
-    provider = FakeAIProvider(["Лампы вспыхнули: вопрос занял своё место."])
+    provider = FakeAIProvider(["Сетевые имена ищут свои адреса, и кто-то обязан их познакомить."])
     service, repository, telegram = make_ai_service(
         tmp_path,
         provider,
@@ -2194,7 +2233,7 @@ def test_ai_candidate_is_reused_when_telegram_edit_needs_retry(tmp_path: Path) -
 
 
 def test_overlapping_ai_retries_claim_one_job_once(tmp_path: Path) -> None:
-    provider = BlockingAIProvider("Пульт проснулся: вопрос уже ждёт смельчаков.")
+    provider = BlockingAIProvider("Сетевые имена ищут свои адреса, и кто-то обязан их познакомить.")
     service, repository, telegram = make_ai_service(tmp_path, provider)
     now = datetime.now(timezone.utc)
     repository.enqueue_ai_enhancement(
@@ -2210,6 +2249,8 @@ def test_overlapping_ai_retries_claim_one_job_once(tmp_path: Path) -> None:
                 "difficulty": "normal",
                 "base_points": 10,
                 "question_link": "https://t.me/c/1/1",
+                "question_text": "What resolves names?",
+                "blocked_answers": ["DNS", "SMTP", "DHCP", "ARP"],
             }
         ),
         next_attempt_at=(now - timedelta(seconds=1)).isoformat(),
