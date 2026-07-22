@@ -12,6 +12,7 @@ DEFAULT_LIMITS = {
     "answers": 250,
     "bets": 250,
     "error_events": 100,
+    "pending_announcements": 100,
 }
 
 
@@ -83,6 +84,13 @@ def export_state(database_path: Path, include_processed_updates: bool = False) -
                 "error_events",
                 order_by="id DESC",
                 limit=DEFAULT_LIMITS["error_events"],
+            ),
+            "pending_announcements": _select_all(
+                connection,
+                tables,
+                "pending_announcements",
+                order_by="next_attempt_at ASC, id ASC",
+                limit=DEFAULT_LIMITS["pending_announcements"],
             ),
         }
 

@@ -2,10 +2,17 @@
 
 ## AI-flavored Kvizi phrases
 
-Status: planned as the next optional feature after database backup/restore.
-Keep the core provider-neutral; an unofficial `g4f` adapter may be experimental,
-but must never be the only configured provider or a runtime dependency of quiz
-delivery.
+Status: design agreed; implementation has not started.
+
+The complete design for provider-neutral host copy and Reddit-like Telegram
+discussion threads is recorded in [`AI_DESIGN.md`](AI_DESIGN.md). It covers
+Reply/Quote context, SQLite branch history, Groq and explicit no-auth g4f
+fallbacks, privacy, limits, feature flags, tests, and staged PythonAnywhere
+rollout.
+
+Keep the core provider-neutral. An unofficial `g4f` adapter may be
+experimental, but must never be the only configured provider or a runtime
+dependency of quiz delivery.
 
 Idea: use `xtekky/gpt4free` / `g4f` only for stylistic text in Kvizi's voice, not for factual quiz generation.
 
@@ -25,12 +32,12 @@ Guardrails:
 - keep it optional behind `KVIZI_AI_ENABLED=1`;
 - expect `g4f` providers to be unstable and possibly incompatible with PythonAnywhere free outbound/network limits.
 
-Suggested implementation:
+The first implementation slice remains:
 
-1. Add `kvizi/ai.py` with a provider interface and a no-op fallback provider.
-2. Add optional `g4f` adapter loaded only when enabled and installed.
-3. Generate only a one- or two-sentence announcement suffix.
-4. Store generated phrase in logs/status only if useful for debugging.
-5. Cover timeout/fallback behavior with tests.
+1. Add `kvizi/ai.py` with a provider interface, Groq adapter, and no-op fallback.
+2. Keep all AI flags off by default.
+3. Generate only a one- or two-sentence announcement suffix from structured facts.
+4. Preserve `kvizi/copy.py` as the guaranteed fallback.
+5. Cover timeout/fallback behavior with tests before enabling anything remotely.
 
 Do later, after core quiz operations stay stable in the real Telegram group.

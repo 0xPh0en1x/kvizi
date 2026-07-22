@@ -64,8 +64,16 @@ class FailOnceSendMessageTelegram(FakeTelegram):
     def send_message(self, **payload: Any) -> dict[str, Any]:
         if not self.failed_once:
             self.failed_once = True
-            raise TelegramApiError("Telegram sendMessage request failed after 3 attempts: proxy 503")
+            raise TelegramApiError(
+                "Telegram sendMessage request failed after 3 attempts: proxy 503",
+                ambiguous=True,
+            )
         return super().send_message(**payload)
+
+
+class AlwaysFailSendMessageTelegram(FakeTelegram):
+    def send_message(self, **payload: Any) -> dict[str, Any]:
+        raise TelegramApiError("temporary proxy 503", ambiguous=True)
 
 
 class FailDocumentForChatTelegram(FakeTelegram):
@@ -118,6 +126,11 @@ class AmbiguousStopPollTelegram(FakeTelegram):
 class AlreadyClosedStopPollTelegram(FakeTelegram):
     def stop_poll(self, **payload: Any) -> dict[str, Any]:
         raise TelegramApiError("Bad Request: poll has already been closed")
+
+
+class CannotStopPollTelegram(FakeTelegram):
+    def stop_poll(self, **payload: Any) -> dict[str, Any]:
+        raise TelegramApiError("Bad Request: poll can't be stopped")
 
 
 def make_settings(tmp_path: Path) -> Settings:
@@ -673,6 +686,27 @@ def test_already_closed_telegram_poll_enters_delivery_grace(tmp_path: Path) -> N
 
     assert service.close_expired_polls() == 1
     assert repository.get_poll("already-closed")["status"] == "closing"
+    assert repository.recent_error_events() == []
+
+
+def test_poll_that_cannot_be_stopped_enters_delivery_grace(tmp_path: Path) -> None:
+    service, repository, _telegram = make_service(tmp_path)
+    service.telegram = CannotStopPollTelegram()  # type: ignore[assignment]
+    repository.create_poll(
+        poll_id="cannot-stop",
+        telegram_message_id=329,
+        question_id="q1",
+        topic_key="network",
+        message_thread_id=101,
+        correct_option_id=0,
+        difficulty="normal",
+        opened_at="1999-01-01T00:00:00+00:00",
+        closes_at="2000-01-01T00:00:00+00:00",
+        explanation="",
+    )
+
+    assert service.close_expired_polls() == 1
+    assert repository.get_poll("cannot-stop")["status"] == "closing"
     assert repository.recent_error_events() == []
 
 
@@ -1841,6 +1875,65 @@ def test_question_announcement_failure_is_non_blocking(tmp_path: Path) -> None:
     errors = repository.recent_error_events()
     assert errors[-1]["event"] == "question_announcement_failed"
     assert "proxy 503" in errors[-1]["message"]
+    pending = repository.pending_announcements_due("9999-01-01T00:00:00+00:00")
+    assert len(pending) == 1
+    assert pending[0]["attempt_count"] == 1
+
+    retried = service.retry_pending_announcements(
+        now=datetime.now(timezone.utc) + timedelta(hours=1)
+    )
+
+    assert retried == 1
+    assert len(telegram.sent_messages) == 1
+    assert telegram.sent_messages[0]["message_thread_id"] == 999
+    assert repository.pending_announcements_due("9999-01-01T00:00:00+00:00") == []
+
+
+def test_overlapping_announcement_retries_send_once(tmp_path: Path) -> None:
+    service, repository, _telegram = make_service(tmp_path)
+    telegram = BlockingSendMessageTelegram()
+    service.telegram = telegram  # type: ignore[assignment]
+    now = datetime.now(timezone.utc)
+    repository.enqueue_pending_announcement(
+        dedupe_key="overlapping-retry",
+        message_thread_id=999,
+        text="Question announcement",
+        event="question_announcement_failed",
+        next_attempt_at=(now - timedelta(minutes=1)).isoformat(),
+        created_at=(now - timedelta(minutes=5)).isoformat(),
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(service.retry_pending_announcements, now=now)
+        assert telegram.entered.wait(timeout=2)
+        second = executor.submit(service.retry_pending_announcements, now=now)
+        assert second.result(timeout=2) == 0
+        telegram.release.set()
+        assert first.result(timeout=2) == 1
+
+    assert len(telegram.sent_messages) == 1
+    assert repository.pending_announcements_due("9999-01-01T00:00:00+00:00") == []
+
+
+def test_announcement_retry_stops_after_max_attempts(tmp_path: Path) -> None:
+    service, repository, _telegram = make_service(tmp_path)
+    service.telegram = AlwaysFailSendMessageTelegram()  # type: ignore[assignment]
+    repository.set_bot_setting("announce_thread_id", "999")
+
+    assert service._send_announcement(  # noqa: SLF001
+        text="Question announcement",
+        event="question_announcement_failed",
+    ) is False
+    first_retry_at = datetime.now(timezone.utc) + timedelta(hours=1)
+    assert service.retry_pending_announcements(now=first_retry_at) == 0
+    assert service.retry_pending_announcements(
+        now=first_retry_at + timedelta(hours=1)
+    ) == 0
+
+    assert repository.pending_announcements_due("9999-01-01T00:00:00+00:00") == []
+    events = repository.recent_error_events()
+    assert events[0]["event"] == "announcement_retry_exhausted"
+    assert "attempts=3" in events[0]["message"]
 
 
 def test_admin_status_reports_loaded_questions_topics_active_polls_and_cron(tmp_path: Path) -> None:

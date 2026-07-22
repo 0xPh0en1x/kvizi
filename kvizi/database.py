@@ -1170,6 +1170,98 @@ class KviziRepository:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def enqueue_pending_announcement(
+        self,
+        *,
+        dedupe_key: str,
+        message_thread_id: int,
+        text: str,
+        event: str,
+        next_attempt_at: str,
+        created_at: str | None = None,
+    ) -> tuple[dict[str, Any], bool]:
+        timestamp = created_at or utc_now_iso()
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT OR IGNORE INTO pending_announcements (
+                    dedupe_key, message_thread_id, text, event, attempt_count,
+                    next_attempt_at, last_error, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, 0, ?, '', ?, ?)
+                """,
+                (
+                    dedupe_key,
+                    message_thread_id,
+                    text,
+                    event,
+                    next_attempt_at,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM pending_announcements WHERE dedupe_key = ?",
+                (dedupe_key,),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("Failed to persist pending announcement")
+        return dict(row), cursor.rowcount == 1
+
+    def pending_announcements_due(
+        self,
+        now_iso: str,
+        *,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM pending_announcements
+                WHERE next_attempt_at <= ?
+                ORDER BY next_attempt_at ASC, id ASC
+                LIMIT ?
+                """,
+                (now_iso, limit),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def reschedule_pending_announcement(
+        self,
+        announcement_id: int,
+        *,
+        attempt_count: int,
+        next_attempt_at: str,
+        last_error: str,
+        updated_at: str,
+    ) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """
+                UPDATE pending_announcements
+                SET attempt_count = ?,
+                    next_attempt_at = ?,
+                    last_error = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    attempt_count,
+                    next_attempt_at,
+                    last_error[:1000],
+                    updated_at,
+                    announcement_id,
+                ),
+            )
+
+    def delete_pending_announcement(self, announcement_id: int) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                "DELETE FROM pending_announcements WHERE id = ?",
+                (announcement_id,),
+            )
+
     def set_bot_setting(self, key: str, value: str) -> None:
         with self.connect() as connection:
             connection.execute(
@@ -1330,6 +1422,19 @@ CREATE TABLE IF NOT EXISTS error_events (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS pending_announcements (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    dedupe_key TEXT NOT NULL UNIQUE,
+    message_thread_id INTEGER NOT NULL,
+    text TEXT NOT NULL,
+    event TEXT NOT NULL,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at TEXT NOT NULL,
+    last_error TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS processed_updates (
     update_id INTEGER PRIMARY KEY,
     processed_at TEXT NOT NULL
@@ -1351,4 +1456,6 @@ CREATE INDEX IF NOT EXISTS idx_polls_status_closes_at ON polls(status, closes_at
 CREATE INDEX IF NOT EXISTS idx_polls_status_closed_at ON polls(status, closed_at);
 CREATE INDEX IF NOT EXISTS idx_scores_leaderboard ON scores(season, points DESC, correct_count DESC);
 CREATE INDEX IF NOT EXISTS idx_error_events_created_at ON error_events(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_pending_announcements_due
+ON pending_announcements(next_attempt_at ASC, id ASC);
 """

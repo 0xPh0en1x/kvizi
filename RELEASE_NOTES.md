@@ -2,6 +2,13 @@
 
 ## Reliability update - 2026-07-22
 
+- Reconciled Telegram's `poll can't be stopped` response as an already closed
+  poll instead of leaving it active and logging the same stop failure repeatedly.
+- Added a durable SQLite retry queue for announcement messages that hit an
+  ambiguous Telegram/proxy failure. Scheduled maintenance retries them without
+  making quiz publication depend on announcement delivery. Telegram does not
+  offer an idempotency key for `sendMessage`, so a lost success response can
+  still produce a rare duplicate on delayed retry.
 - Updated native quiz poll payloads for the current Telegram Bot API.
 - Disabled automatic retries for non-idempotent Telegram sends and retained
   retries for safe metadata/download requests.

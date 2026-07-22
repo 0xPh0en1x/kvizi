@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import random
 import re
@@ -30,6 +31,8 @@ PROD_CHECK_RECENT_HOURS = 36
 OPERATION_CLAIM_SECONDS = 300
 ANSWER_DELIVERY_GRACE_SECONDS = 3600
 MISMATCH_DELIVERY_GRACE_SECONDS = 86400
+ANNOUNCEMENT_RETRY_DELAY_SECONDS = 300
+ANNOUNCEMENT_MAX_ATTEMPTS = 3
 TRANSIENT_TELEGRAM_ERROR_MARKERS = (
     "503 service unavailable",
     "unable to connect to proxy",
@@ -201,6 +204,7 @@ class KviziService:
 
     def close_expired_polls(self) -> int:
         now = datetime.now(timezone.utc)
+        self.retry_pending_announcements(now=now)
         now_iso = now.isoformat()
         changed = 0
         expired = self.repository.expired_active_polls(now_iso)
@@ -955,6 +959,8 @@ class KviziService:
             marker in message
             for marker in (
                 "poll has already been closed",
+                "poll can't be stopped",
+                "poll can’t be stopped",
                 "message is not a poll",
                 "message to stop not found",
             )
@@ -2110,20 +2116,93 @@ class KviziService:
         if thread_id is None:
             return False
 
+        now = datetime.now(timezone.utc)
+        dedupe_source = f"{thread_id}\0{event}\0{text}".encode("utf-8")
+        pending, inserted = self.repository.enqueue_pending_announcement(
+            dedupe_key=hashlib.sha256(dedupe_source).hexdigest(),
+            message_thread_id=thread_id,
+            text=text,
+            event=event,
+            next_attempt_at=(
+                now + timedelta(seconds=ANNOUNCEMENT_RETRY_DELAY_SECONDS)
+            ).isoformat(),
+            created_at=now.isoformat(),
+        )
+        if not inserted:
+            return False
+
+        return self._deliver_pending_announcement(pending, now=now, initial_attempt=True)
+
+    def retry_pending_announcements(self, *, now: datetime | None = None) -> int:
+        current = now or datetime.now(timezone.utc)
+        delivered = 0
+        for pending in self.repository.pending_announcements_due(current.isoformat()):
+            announcement_id = int(pending["id"])
+            claim_key = f"announcement:{announcement_id}"
+            if not self.repository.try_claim_operation(
+                claim_key,
+                claimed_at=current.isoformat(),
+                expires_at=(current + timedelta(seconds=OPERATION_CLAIM_SECONDS)).isoformat(),
+            ):
+                continue
+            try:
+                if self._deliver_pending_announcement(
+                    pending,
+                    now=current,
+                    initial_attempt=False,
+                ):
+                    delivered += 1
+            finally:
+                self.repository.release_operation(claim_key)
+        return delivered
+
+    def _deliver_pending_announcement(
+        self,
+        pending: dict[str, Any],
+        *,
+        now: datetime,
+        initial_attempt: bool,
+    ) -> bool:
+        announcement_id = int(pending["id"])
+        attempt_count = int(pending["attempt_count"]) + 1
         try:
             self.telegram.send_message(
                 chat_id=self.settings.telegram_chat_id,
-                message_thread_id=thread_id,
-                text=text,
+                message_thread_id=int(pending["message_thread_id"]),
+                text=str(pending["text"]),
                 disable_notification=True,
             )
         except TelegramApiError as exc:
-            self.repository.record_error_event(
-                source="telegram",
-                event=event,
-                message=str(exc),
-            )
+            if initial_attempt:
+                self.repository.record_error_event(
+                    source="telegram",
+                    event=str(pending["event"]),
+                    message=str(exc),
+                )
+
+            if exc.ambiguous and attempt_count < ANNOUNCEMENT_MAX_ATTEMPTS:
+                self.repository.reschedule_pending_announcement(
+                    announcement_id,
+                    attempt_count=attempt_count,
+                    next_attempt_at=(
+                        now + timedelta(seconds=ANNOUNCEMENT_RETRY_DELAY_SECONDS)
+                    ).isoformat(),
+                    last_error=str(exc),
+                    updated_at=now.isoformat(),
+                )
+            else:
+                self.repository.delete_pending_announcement(announcement_id)
+                if not initial_attempt:
+                    self.repository.record_error_event(
+                        source="telegram",
+                        event="announcement_retry_exhausted",
+                        message=(
+                            f"event={pending['event']}, attempts={attempt_count}: {exc}"
+                        ),
+                    )
             return False
+
+        self.repository.delete_pending_announcement(announcement_id)
         return True
 
     def _message_link(self, message_id: int) -> str | None:
