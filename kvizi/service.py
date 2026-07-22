@@ -284,10 +284,20 @@ class KviziService:
             claimed_at=claimed_at.isoformat(),
             expires_at=(claimed_at + timedelta(seconds=OPERATION_CLAIM_SECONDS)).isoformat(),
         ):
+            active_claim = self.repository.active_operation_claim(
+                operation_key,
+                now_iso=claimed_at.isoformat(),
+            )
+            claim_until = (
+                f" до {self._short_dt(str(active_claim['expires_at']))}"
+                if active_claim is not None
+                else " ещё несколько минут"
+            )
             return PostQuestionResult(
                 False,
-                "Предыдущая публикация ещё выполняется или проверяется после сбоя Telegram. "
-                "Подожди до 5 минут и проверь /kvizi_status перед повтором.",
+                "Защита от дубля публикации активна"
+                f"{claim_until}: предыдущий sendPoll ещё выполняется или завершился "
+                "неоднозначным сбоем Telegram. Проверь /kvizi_status после этого времени.",
             )
 
         release_claim = True
@@ -1095,6 +1105,8 @@ class KviziService:
         )
         cron = self.repository.latest_cron_run()
         announce_thread_id = self._announce_thread_id()
+        pending_announcements = self.repository.pending_announcement_count()
+        post_claim = self.repository.active_operation_claim("post_question", now_iso=now_iso)
         difficulties = ", ".join(sorted(self.question_bank.difficulties())) or "нет"
 
         lines = [
@@ -1103,7 +1115,16 @@ class KviziService:
             f"Сложности: {difficulties}",
             f"Сезон: {self.settings.season_name}",
             f"Анонс-топик: {announce_thread_id if announce_thread_id is not None else 'не задан'}",
+            f"Анонсы в очереди: {pending_announcements}",
         ]
+
+        if post_claim is None:
+            lines.append("Защита публикации: не активна")
+        else:
+            lines.append(
+                "Защита публикации: активна до "
+                f"{self._short_dt(str(post_claim['expires_at']))}"
+            )
 
         lines.append("Топики:")
         if not topics:
@@ -1161,6 +1182,8 @@ class KviziService:
         active_topics = [topic for topic in topics if int(topic["active"]) and int(topic["weight"]) > 0]
         cron = self.repository.latest_cron_run()
         announce_thread_id = self._announce_thread_id()
+        pending_announcements = self.repository.pending_announcement_count()
+        post_claim = self.repository.active_operation_claim("post_question", now_iso=now_iso)
         difficulties = ", ".join(sorted(self.question_bank.difficulties())) or "нет"
         busy_topics = self._topic_counts(active_polls)
 
@@ -1168,8 +1191,15 @@ class KviziService:
             "Статус Квизи compact:",
             f"Вопросы: {self.question_bank.count()} | сложности: {difficulties}",
             f"Топики: active={len(active_topics)}/{len(topics)} | анонсы: {announce_thread_id if announce_thread_id is not None else 'не задан'}",
+            f"Очередь анонсов: {pending_announcements}",
             f"Poll: active={len(active_polls)}, expired={len(expired_polls)}, challenge={challenge_count}",
         ]
+
+        if post_claim is not None:
+            lines.append(
+                "Защита sendPoll: до "
+                f"{self._short_dt(str(post_claim['expires_at']))}"
+            )
 
         if busy_topics:
             lines.append(f"Занятые топики: {busy_topics}")
@@ -2566,6 +2596,7 @@ class KviziService:
         return build_question_teaser_messages(
             str(context.get("topic_key") or ""),
             str(context.get("question_text") or ""),
+            forbidden_phrases=self._ai_blocked_answers(context),
         )
 
     def _complete_question_teaser(
@@ -2588,6 +2619,7 @@ class KviziService:
         messages = build_question_teaser_messages(
             topic_key,
             question_text,
+            forbidden_phrases=blocked_answers,
             variation=variation,
         )
         result = provider.complete(

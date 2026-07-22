@@ -197,7 +197,7 @@ def normalize_short_intro(
     normalized_tokens = _normalized_tokens(normalized)
     for phrase in forbidden_phrases:
         phrase_tokens = _normalized_tokens(phrase)
-        if phrase_tokens and _contains_token_sequence(normalized_tokens, phrase_tokens):
+        if phrase_tokens and _contains_related_token_sequence(normalized_tokens, phrase_tokens):
             raise AIProviderError(
                 "AI intro contains a protected answer option",
                 kind="invalid_output",
@@ -216,12 +216,50 @@ def _normalized_tokens(value: str) -> tuple[str, ...]:
     return tuple(re.findall(r"[0-9a-zа-яё]+", value.casefold()))
 
 
-def _contains_token_sequence(
+def contains_related_phrase(value: str, candidate: str) -> bool:
+    """Return whether a phrase occurs verbatim or in a simple inflected form.
+
+    This deliberately small matcher is used as a safety boundary, not as a
+    general-purpose Russian stemmer. False positives only reject an AI teaser
+    and leave the deterministic copy in place.
+    """
+
+    candidate_tokens = _normalized_tokens(candidate)
+    return bool(candidate_tokens) and _contains_related_token_sequence(
+        _normalized_tokens(value),
+        candidate_tokens,
+    )
+
+
+def _contains_related_token_sequence(
     tokens: tuple[str, ...],
     candidate: tuple[str, ...],
 ) -> bool:
     width = len(candidate)
-    return any(tokens[index : index + width] == candidate for index in range(len(tokens) - width + 1))
+    return any(
+        all(
+            _tokens_are_related(actual, expected)
+            for actual, expected in zip(tokens[index : index + width], candidate)
+        )
+        for index in range(len(tokens) - width + 1)
+    )
+
+
+def _tokens_are_related(actual: str, expected: str) -> bool:
+    if actual == expected:
+        return True
+    shorter = min(len(actual), len(expected))
+    if shorter < 3:
+        return False
+    if actual.startswith(expected) or expected.startswith(actual):
+        return abs(len(actual) - len(expected)) <= 4
+
+    common_prefix = 0
+    for actual_char, expected_char in zip(actual, expected):
+        if actual_char != expected_char:
+            break
+        common_prefix += 1
+    return common_prefix >= 4 and common_prefix / shorter >= 0.6
 
 
 def _retry_after_seconds(response: requests.Response) -> float | None:

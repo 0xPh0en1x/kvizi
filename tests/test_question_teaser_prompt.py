@@ -12,14 +12,15 @@ from kvizi.prompts.question_teaser import (
 )
 
 
-def test_prompt_skill_contains_contract_examples_and_only_safe_question_context() -> None:
+def test_prompt_skill_contains_contract_examples_and_protected_answers() -> None:
     messages = build_question_teaser_messages(
         "network",
         "What resolves names?",
+        forbidden_phrases=("DNS", "SMTP"),
         variation=2,
     )
 
-    assert PROMPT_SKILL_NAME == "question-teaser-v1"
+    assert PROMPT_SKILL_NAME == "question-teaser-v2"
     assert messages[0]["role"] == "system"
     assert "антипримеры" in messages[0]["content"]
     assert any(message["role"] == "assistant" for message in messages)
@@ -28,11 +29,11 @@ def test_prompt_skill_contains_contract_examples_and_only_safe_question_context(
         "task": "question_teaser",
         "topic": "network",
         "question": "What resolves names?",
+        "forbidden_answers": ["DNS", "SMTP"],
         "preview_variant": 2,
     }
     serialized = json.dumps(messages, ensure_ascii=False)
-    assert "SMTP" not in serialized
-    assert "DHCP" not in serialized
+    assert "forbidden_answers" in serialized
     assert "question_link" not in serialized
     assert "base_points" not in serialized
 
@@ -67,6 +68,23 @@ def test_parse_question_teaser_accepts_exact_question_anchor() -> None:
 
     assert result.teaser.startswith("Доменное имя")
     assert result.anchor == "доменное имя"
+
+
+def test_parse_question_teaser_accepts_inflected_question_anchor() -> None:
+    result = parse_question_teaser(
+        json.dumps(
+            {
+                "teaser": "Канальный уровень приготовился к короткому знакомству без подсказок.",
+                "anchor": "канального уровня",
+            },
+            ensure_ascii=False,
+        ),
+        question_text="Как называется единица данных канального уровня модели OSI?",
+        max_chars=160,
+        forbidden_phrases=("Кадр", "Пакет", "Сегмент", "Бит"),
+    )
+
+    assert result.anchor == "канального уровня"
 
 
 @pytest.mark.parametrize(

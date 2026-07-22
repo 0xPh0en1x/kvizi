@@ -1409,6 +1409,13 @@ class KviziRepository:
             ).fetchone()
         return int(row["count"]) if row is not None else 0
 
+    def pending_announcement_count(self) -> int:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT COUNT(*) AS count FROM pending_announcements"
+            ).fetchone()
+        return int(row["count"]) if row is not None else 0
+
     def set_bot_setting(self, key: str, value: str) -> None:
         with self.connect() as connection:
             connection.execute(
@@ -1444,6 +1451,18 @@ class KviziRepository:
                 (key, claimed_at, expires_at),
             )
         return cursor.rowcount == 1
+
+    def active_operation_claim(self, key: str, *, now_iso: str) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT operation_key, claimed_at, expires_at
+                FROM operation_claims
+                WHERE operation_key = ? AND expires_at > ?
+                """,
+                (key, now_iso),
+            ).fetchone()
+        return dict(row) if row is not None else None
 
     def release_operation(self, key: str) -> None:
         with self.connect() as connection:

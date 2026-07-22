@@ -2117,8 +2117,7 @@ def test_ai_question_copy_sends_static_text_then_edits_safe_facts(tmp_path: Path
     assert "Не отвечай на вопрос" in system_prompt
     assert '"question": "What resolves names?"' in user_prompt
     assert '"topic": "network"' in user_prompt
-    assert "DNS" not in user_prompt
-    assert "SMTP" not in user_prompt
+    assert '"forbidden_answers": ["DNS", "SMTP", "DHCP", "ARP"]' in user_prompt
     assert "base_points" not in user_prompt
     assert "question_link" not in user_prompt
 
@@ -2326,7 +2325,7 @@ def test_admin_ai_status_does_not_call_provider(tmp_path: Path) -> None:
     assert "AI Квизи:" in text
     assert "генерация подводок: ON" in text
     assert "fake/fake-copy-model" in text
-    assert "prompt-skill: question-teaser-v1" in text
+    assert "prompt-skill: question-teaser-v2" in text
     assert "ожидают улучшения: 0" in text
     assert provider.calls == []
 
@@ -2335,16 +2334,16 @@ def test_admin_ai_preview_generates_three_variants_without_publishing(tmp_path: 
     provider = FakeAIProvider(
         [
             ai_teaser(
-                "Канального уровня сегодня достаточно, чтобы данные вышли на сцену в правильном костюме.",
+                "Единица данных ждёт короткого имени, а модель OSI снова разложила всё по полкам.",
+                "единица данных",
+            ),
+            ai_teaser(
+                "У канального уровня сегодня собеседование — без подсказок и лишнего пафоса.",
                 "канального уровня",
             ),
             ai_teaser(
-                "Единица данных канального уровня уже у рампы — осталось назвать её роль.",
-                "единица данных канального уровня",
-            ),
-            ai_teaser(
-                "Модель OSI распределила роли, а канального уровня всё ещё ждёт точное имя.",
-                "канального уровня",
+                "Модель OSI распределила роли и оставила одно короткое имя на десерт.",
+                "модели OSI",
             ),
         ]
     )
@@ -2379,8 +2378,8 @@ def test_admin_ai_preview_generates_three_variants_without_publishing(tmp_path: 
     assert len(telegram.sent_messages) == 1
     text = telegram.sent_messages[0]["text"]
     assert "AI-preview Квизи:" in text
-    assert "1. Канального уровня" in text
-    assert "2. Единица данных" in text
+    assert "1. Единица данных" in text
+    assert "2. У канального уровня" in text
     assert "3. Модель OSI" in text
     assert "poll, анонсы и история вопросов не изменены" in text
 
@@ -2432,6 +2431,19 @@ def test_admin_status_reports_loaded_questions_topics_active_polls_and_cron(tmp_
         "posted",
         "ok",
     )
+    now = datetime.now(timezone.utc)
+    repository.enqueue_pending_announcement(
+        dedupe_key="status-pending-announcement",
+        message_thread_id=999,
+        text="Queued announcement",
+        event="question_announcement_failed",
+        next_attempt_at=(now + timedelta(minutes=5)).isoformat(),
+    )
+    assert repository.try_claim_operation(
+        "post_question",
+        claimed_at=now.isoformat(),
+        expires_at=(now + timedelta(minutes=5)).isoformat(),
+    )
 
     result = service.handle_update(
         {
@@ -2456,6 +2468,8 @@ def test_admin_status_reports_loaded_questions_topics_active_polls_and_cron(tmp_
     assert "05.07.2026 23:00:01 MSK" in text
     assert "2026-07-05 20:00:01" not in text
     assert "Анонс-топик: 999" in text
+    assert "Анонсы в очереди: 1" in text
+    assert "Защита публикации: активна до" in text
     assert "Последний cron: posted" in text
 
 
@@ -3712,8 +3726,8 @@ def test_concurrent_question_posts_use_durable_global_claim(tmp_path: Path) -> N
 
     assert first.posted is True
     assert second.posted is False
-    assert "проверяется после сбоя Telegram" in second.message
-    assert "до 5 минут" in second.message
+    assert "Защита от дубля публикации активна до" in second.message
+    assert "неоднозначным сбоем Telegram" in second.message
     assert len(telegram.sent_polls) == 1
     assert len(repository.active_polls(utc_now_iso())) == 1
 

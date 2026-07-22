@@ -7,18 +7,21 @@
 - Limited Qwen sampling options to fields accepted by Groq Chat Completions;
   the model card mentions `top_k`/`min_p`, but the API rejects these properties.
 - Clarified the five-minute publication guard shown after an ambiguous Telegram
-  send failure, instead of claiming that a particular topic is definitely busy.
-- Added the versioned `question-teaser-v1` prompt-skill with persona rules,
-  few-shot examples, anti-examples, and a validated exact-question anchor.
+  send failure and exposed its exact expiry in `/kvizi_status`.
+- Added pending-announcement counts to the full and compact status reports so a
+  delayed Telegram `sendMessage` is distinguishable from a missing announcement.
+- Upgraded the prompt contract to `question-teaser-v2`: it allows natural
+  inflection of a validated question anchor, supplies protected answer options
+  to the model, and rejects answer leaks even in another case or number.
 - Added admin-only `/kvizi_ai_preview [topic]`: it generates three variants
   from built-in synthetic scenarios without reading `questions.csv`, posting a
   poll/announcement, or mutating question history.
 - Added the first optional Groq-powered host-copy slice. New-question
   announcements now send reliable `copy.py` text first and only then edit the
   normal Telegram message with a validated AI intro.
-- Made AI intros use the published question text while keeping every answer
-  option out of the provider request. Lowered generation temperature and reject
-  answer leaks plus known generic filler, retaining `copy.py` as a quiet fallback.
+- Made AI intros use only the published question and its protected answer list.
+  The server still rejects answer leaks plus known generic filler and retains
+  `copy.py` as a quiet fallback.
 - Added durable `ai_enhancement_jobs` in SQLite. Retryable provider failures
   and ambiguous Telegram edit failures are retried by maintenance; saved edit
   candidates are reused without spending another model request.

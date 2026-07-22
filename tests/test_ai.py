@@ -132,6 +132,22 @@ def test_short_intro_rejects_protected_answer_option() -> None:
     assert error.value.retryable is False
 
 
+@pytest.mark.parametrize(
+    ("text", "forbidden"),
+    (
+        ("Пакеты уже строятся в очередь.", "Пакет"),
+        ("Биты снова требуют внимания.", "Бит"),
+        ("Оперативной памяти отвели главную роль.", "Оперативная память"),
+    ),
+)
+def test_short_intro_rejects_inflected_protected_answer_option(
+    text: str,
+    forbidden: str,
+) -> None:
+    with pytest.raises(AIProviderError, match="protected answer"):
+        normalize_short_intro(text, forbidden_phrases=(forbidden,))
+
+
 def test_short_intro_rejects_low_quality_pattern() -> None:
     with pytest.raises(AIProviderError) as error:
         normalize_short_intro(
