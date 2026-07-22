@@ -65,8 +65,37 @@ $env:KVIZI_ADMIN_IDS="111111111,222222222"
 - `KVIZI_ANNOUNCE_NO_ANSWERS=true` — анонс вопросов, закрытых без ответов
 - `KVIZI_ANNOUNCE_RISK_FAILURES=true` — анонс проваленных x2/x3
 - `KVIZI_ANNOUNCE_STREAKS=true` — анонс бонусных серий
+- `KVIZI_AI_ENABLED=false` и `KVIZI_AI_COPY_ENABLED=false` — общий и отдельный флаги AI-подводок
+- `GROQ_API_KEY=...` — ключ Groq; без него AI-контур не запускается
+- `KVIZI_AI_COPY_MODEL=llama-3.1-8b-instant` — модель коротких подводок
+- `KVIZI_AI_TIMEOUT_SECONDS=7` — timeout одной попытки
+- `KVIZI_AI_RETRY_DELAY_SECONDS=300`, `KVIZI_AI_MAX_ATTEMPTS=3`, `KVIZI_AI_JOB_TTL_SECONDS=1800` — очередь повторов
 - `KVIZI_DIFFICULTY_POINTS=easy:5,normal:10,hard:15,ccna:20` — базовые очки за правильный ответ
 - `KVIZI_CHALLENGE_REWARDS=easy:5:10,normal:10:25,hard:15:40,ccna:20:55` — `difficulty:cost:reward`
+
+### AI-подводки без риска для публикации
+
+Первая реализация AI работает только для обычного сообщения о новом вопросе.
+Квизи сначала отправляет полноценный детерминированный текст из `kvizi/copy.py`.
+Только после подтверждённого `message_id` он просит Groq написать одну короткую
+подводку и редактирует это сообщение через Telegram `editMessageText`.
+
+Тема, сложность, очки и ссылка никогда не берутся из ответа модели: сервер
+добавляет их отдельным неизменяемым блоком. Timeout, 429, 5xx и сетевые ошибки
+оставляют исходный текст на месте и сохраняют AI-задачу в SQLite. Повторы делает
+`/cron/maintenance`; после лимита попыток или TTL исходный текст просто остаётся.
+Нативный Telegram poll не редактируется.
+
+Включение на PythonAnywhere:
+
+```text
+KVIZI_AI_ENABLED=true
+KVIZI_AI_COPY_ENABLED=true
+GROQ_API_KEY=<secret>
+```
+
+После Reload проверить `/health` и `/kvizi_ai_status`. Ключ Groq не сохраняется
+в SQLite, экспорт и сообщения об ошибках.
 
 ## Вопросы
 
@@ -156,6 +185,7 @@ topic из текущего CSV.
 - `/kvizi_review` — показать вопросы с подозрительной статистикой или пустыми explanation/source
 - `/kvizi_status` — показать вопросы, топики, активные poll/challenge и последний cron
 - `/kvizi_status_compact` — короткий статус со счётчиками active/expired/challenge
+- `/kvizi_ai_status` — флаги, provider/model и размер очереди AI-улучшений
 - `/kvizi_version` — показать версию кода, git commit и deploy-пути
 - `/kvizi_questions_status` — показать покрытие `questions.csv` по темам и сложностям
 - `/kvizi_questions_template [difficulty]` — отправить CSV-шаблон для новых вопросов

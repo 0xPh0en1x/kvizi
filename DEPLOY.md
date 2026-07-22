@@ -49,6 +49,14 @@ KVIZI_ANNOUNCE_FIRST_ANSWER=true
 KVIZI_ANNOUNCE_NO_ANSWERS=true
 KVIZI_ANNOUNCE_RISK_FAILURES=true
 KVIZI_ANNOUNCE_STREAKS=true
+KVIZI_AI_ENABLED=false
+KVIZI_AI_COPY_ENABLED=false
+GROQ_API_KEY=
+KVIZI_AI_COPY_MODEL=llama-3.1-8b-instant
+KVIZI_AI_TIMEOUT_SECONDS=7
+KVIZI_AI_RETRY_DELAY_SECONDS=300
+KVIZI_AI_MAX_ATTEMPTS=3
+KVIZI_AI_JOB_TTL_SECONDS=1800
 KVIZI_DIFFICULTY_POINTS=easy:5,normal:10,hard:15,ccna:20
 KVIZI_CHALLENGE_REWARDS=easy:5:10,normal:10:25,hard:15:40,ccna:20:55
 ```
@@ -75,6 +83,11 @@ os.environ["KVIZI_ANNOUNCE_FIRST_ANSWER"] = "true"
 os.environ["KVIZI_ANNOUNCE_NO_ANSWERS"] = "true"
 os.environ["KVIZI_ANNOUNCE_RISK_FAILURES"] = "true"
 os.environ["KVIZI_ANNOUNCE_STREAKS"] = "true"
+# AI-подводки необязательны. Сначала оставить оба флага false.
+os.environ["KVIZI_AI_ENABLED"] = "false"
+os.environ["KVIZI_AI_COPY_ENABLED"] = "false"
+# При включении лучше хранить ключ в Web app environment, а не в git.
+# os.environ["GROQ_API_KEY"] = "..."
 os.environ["KVIZI_DIFFICULTY_POINTS"] = "easy:5,normal:10,hard:15,ccna:20"
 os.environ["KVIZI_CHALLENGE_REWARDS"] = "easy:5:10,normal:10:25,hard:15:40,ccna:20:55"
 
@@ -194,7 +207,8 @@ https://YOUR_USERNAME.pythonanywhere.com/cron/maintenance
 
 Every 10-15 minutes. Closes expired polls, waits one hour for delayed Telegram
 `poll_answer` webhooks (up to 24 hours when voter totals do not match), then
-settles unanswered challenges.
+settles unanswered challenges. It also retries one due AI enhancement per run,
+so Groq cannot hold the maintenance request for an unbounded number of timeouts.
 
 ```text
 https://YOUR_USERNAME.pythonanywhere.com/cron/daily

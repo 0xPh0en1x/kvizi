@@ -31,6 +31,20 @@ def _parse_bool(raw: str | None, default: bool = True) -> bool:
     raise ValueError(f"Invalid boolean value: {raw!r}")
 
 
+def _parse_positive_int(raw: str | None, default: int, name: str) -> int:
+    value = int(raw) if raw and raw.strip() else default
+    if value <= 0:
+        raise ValueError(f"{name} must be greater than zero")
+    return value
+
+
+def _parse_positive_float(raw: str | None, default: float, name: str) -> float:
+    value = float(raw) if raw and raw.strip() else default
+    if value <= 0:
+        raise ValueError(f"{name} must be greater than zero")
+    return value
+
+
 @dataclass(frozen=True)
 class Settings:
     telegram_bot_token: str
@@ -49,6 +63,14 @@ class Settings:
     announce_no_answers: bool
     announce_risk_failures: bool
     announce_streaks: bool
+    ai_enabled: bool
+    ai_copy_enabled: bool
+    groq_api_key: str
+    ai_copy_model: str
+    ai_timeout_seconds: float
+    ai_retry_delay_seconds: int
+    ai_max_attempts: int
+    ai_job_ttl_seconds: int
     difficulty_points: dict[str, int]
     challenge_economy: dict[str, dict[str, int]]
 
@@ -75,6 +97,30 @@ def load_settings() -> Settings:
         announce_no_answers=_parse_bool(os.getenv("KVIZI_ANNOUNCE_NO_ANSWERS"), True),
         announce_risk_failures=_parse_bool(os.getenv("KVIZI_ANNOUNCE_RISK_FAILURES"), True),
         announce_streaks=_parse_bool(os.getenv("KVIZI_ANNOUNCE_STREAKS"), True),
+        ai_enabled=_parse_bool(os.getenv("KVIZI_AI_ENABLED"), False),
+        ai_copy_enabled=_parse_bool(os.getenv("KVIZI_AI_COPY_ENABLED"), False),
+        groq_api_key=os.getenv("GROQ_API_KEY", "").strip(),
+        ai_copy_model=os.getenv("KVIZI_AI_COPY_MODEL", "llama-3.1-8b-instant").strip(),
+        ai_timeout_seconds=_parse_positive_float(
+            os.getenv("KVIZI_AI_TIMEOUT_SECONDS"),
+            7.0,
+            "KVIZI_AI_TIMEOUT_SECONDS",
+        ),
+        ai_retry_delay_seconds=_parse_positive_int(
+            os.getenv("KVIZI_AI_RETRY_DELAY_SECONDS"),
+            300,
+            "KVIZI_AI_RETRY_DELAY_SECONDS",
+        ),
+        ai_max_attempts=_parse_positive_int(
+            os.getenv("KVIZI_AI_MAX_ATTEMPTS"),
+            3,
+            "KVIZI_AI_MAX_ATTEMPTS",
+        ),
+        ai_job_ttl_seconds=_parse_positive_int(
+            os.getenv("KVIZI_AI_JOB_TTL_SECONDS"),
+            1800,
+            "KVIZI_AI_JOB_TTL_SECONDS",
+        ),
         difficulty_points=parse_difficulty_points(os.getenv("KVIZI_DIFFICULTY_POINTS")),
         challenge_economy=parse_challenge_economy(os.getenv("KVIZI_CHALLENGE_REWARDS")),
     )

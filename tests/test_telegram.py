@@ -97,6 +97,30 @@ def test_send_poll_uses_current_bot_api_payload(monkeypatch: Any) -> None:
     assert "correct_option_id" not in payload
 
 
+def test_edit_message_text_targets_original_message(monkeypatch: Any) -> None:
+    post_calls: list[dict[str, Any]] = []
+
+    def fake_post(url: str, json: dict[str, Any], timeout: int) -> FakeJsonResponse:
+        post_calls.append({"url": url, "json": json, "timeout": timeout})
+        return FakeJsonResponse({"ok": True, "result": {"message_id": 42}})
+
+    monkeypatch.setattr(telegram_module.requests, "post", fake_post)
+
+    TelegramClient("token").edit_message_text(
+        chat_id="-1001",
+        message_id=42,
+        text="Improved",
+    )
+
+    assert post_calls == [
+        {
+            "url": "https://api.telegram.org/bottoken/editMessageText",
+            "json": {"chat_id": "-1001", "message_id": 42, "text": "Improved"},
+            "timeout": 15,
+        }
+    ]
+
+
 def test_send_message_does_not_retry_ambiguous_proxy_error(monkeypatch: Any) -> None:
     post_calls: list[dict[str, Any]] = []
 

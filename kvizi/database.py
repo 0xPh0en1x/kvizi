@@ -65,6 +65,7 @@ class KviziRepository:
             connection.executescript(SCHEMA_SQL)
             self._migrate_poll_columns(connection)
             self._migrate_answer_columns(connection)
+            self._migrate_pending_announcement_columns(connection)
 
     def _migrate_poll_columns(self, connection: sqlite3.Connection) -> None:
         existing = {
@@ -88,6 +89,21 @@ class KviziRepository:
         }
         if "season" not in existing:
             connection.execute("ALTER TABLE answers ADD COLUMN season TEXT NOT NULL DEFAULT 'main'")
+
+    def _migrate_pending_announcement_columns(self, connection: sqlite3.Connection) -> None:
+        existing = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(pending_announcements)").fetchall()
+        }
+        columns = {
+            "ai_purpose": "TEXT NOT NULL DEFAULT ''",
+            "ai_context_json": "TEXT NOT NULL DEFAULT ''",
+        }
+        for name, definition in columns.items():
+            if name not in existing:
+                connection.execute(
+                    f"ALTER TABLE pending_announcements ADD COLUMN {name} {definition}"
+                )
 
     def upsert_user(self, user: dict[str, Any]) -> None:
         user_id = user.get("id")
@@ -1179,6 +1195,8 @@ class KviziRepository:
         event: str,
         next_attempt_at: str,
         created_at: str | None = None,
+        ai_purpose: str = "",
+        ai_context_json: str = "",
     ) -> tuple[dict[str, Any], bool]:
         timestamp = created_at or utc_now_iso()
         with self.connect() as connection:
@@ -1186,9 +1204,10 @@ class KviziRepository:
                 """
                 INSERT OR IGNORE INTO pending_announcements (
                     dedupe_key, message_thread_id, text, event, attempt_count,
-                    next_attempt_at, last_error, created_at, updated_at
+                    next_attempt_at, last_error, ai_purpose, ai_context_json,
+                    created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, 0, ?, '', ?, ?)
+                VALUES (?, ?, ?, ?, 0, ?, '', ?, ?, ?, ?)
                 """,
                 (
                     dedupe_key,
@@ -1196,6 +1215,8 @@ class KviziRepository:
                     text,
                     event,
                     next_attempt_at,
+                    ai_purpose,
+                    ai_context_json,
                     timestamp,
                     timestamp,
                 ),
@@ -1261,6 +1282,132 @@ class KviziRepository:
                 "DELETE FROM pending_announcements WHERE id = ?",
                 (announcement_id,),
             )
+
+    def enqueue_ai_enhancement(
+        self,
+        *,
+        dedupe_key: str,
+        purpose: str,
+        chat_id: str,
+        message_thread_id: int,
+        telegram_message_id: int,
+        base_text: str,
+        context_json: str,
+        next_attempt_at: str,
+        expires_at: str,
+        created_at: str | None = None,
+    ) -> tuple[dict[str, Any], bool]:
+        timestamp = created_at or utc_now_iso()
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT OR IGNORE INTO ai_enhancement_jobs (
+                    dedupe_key, purpose, chat_id, message_thread_id,
+                    telegram_message_id, base_text, context_json, candidate_text,
+                    attempt_count, next_attempt_at, expires_at, last_error,
+                    created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, '', 0, ?, ?, '', ?, ?)
+                """,
+                (
+                    dedupe_key,
+                    purpose,
+                    chat_id,
+                    message_thread_id,
+                    telegram_message_id,
+                    base_text,
+                    context_json,
+                    next_attempt_at,
+                    expires_at,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM ai_enhancement_jobs WHERE dedupe_key = ?",
+                (dedupe_key,),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("Failed to persist AI enhancement job")
+        return dict(row), cursor.rowcount == 1
+
+    def ai_enhancements_due(self, now_iso: str, *, limit: int = 10) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM ai_enhancement_jobs
+                WHERE next_attempt_at <= ? AND expires_at > ?
+                ORDER BY next_attempt_at ASC, id ASC
+                LIMIT ?
+                """,
+                (now_iso, now_iso, limit),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def set_ai_enhancement_candidate(
+        self,
+        job_id: int,
+        *,
+        candidate_text: str,
+        updated_at: str,
+    ) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """
+                UPDATE ai_enhancement_jobs
+                SET candidate_text = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (candidate_text, updated_at, job_id),
+            )
+
+    def reschedule_ai_enhancement(
+        self,
+        job_id: int,
+        *,
+        attempt_count: int,
+        next_attempt_at: str,
+        last_error: str,
+        updated_at: str,
+    ) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """
+                UPDATE ai_enhancement_jobs
+                SET attempt_count = ?,
+                    next_attempt_at = ?,
+                    last_error = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    attempt_count,
+                    next_attempt_at,
+                    last_error[:1000],
+                    updated_at,
+                    job_id,
+                ),
+            )
+
+    def delete_ai_enhancement(self, job_id: int) -> None:
+        with self.connect() as connection:
+            connection.execute("DELETE FROM ai_enhancement_jobs WHERE id = ?", (job_id,))
+
+    def delete_expired_ai_enhancements(self, now_iso: str) -> int:
+        with self.connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM ai_enhancement_jobs WHERE expires_at <= ?",
+                (now_iso,),
+            )
+        return cursor.rowcount
+
+    def pending_ai_enhancement_count(self) -> int:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT COUNT(*) AS count FROM ai_enhancement_jobs"
+            ).fetchone()
+        return int(row["count"]) if row is not None else 0
 
     def set_bot_setting(self, key: str, value: str) -> None:
         with self.connect() as connection:
@@ -1431,6 +1578,26 @@ CREATE TABLE IF NOT EXISTS pending_announcements (
     attempt_count INTEGER NOT NULL DEFAULT 0,
     next_attempt_at TEXT NOT NULL,
     last_error TEXT NOT NULL DEFAULT '',
+    ai_purpose TEXT NOT NULL DEFAULT '',
+    ai_context_json TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS ai_enhancement_jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    dedupe_key TEXT NOT NULL UNIQUE,
+    purpose TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    message_thread_id INTEGER NOT NULL,
+    telegram_message_id INTEGER NOT NULL,
+    base_text TEXT NOT NULL,
+    context_json TEXT NOT NULL,
+    candidate_text TEXT NOT NULL DEFAULT '',
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    last_error TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -1458,4 +1625,6 @@ CREATE INDEX IF NOT EXISTS idx_scores_leaderboard ON scores(season, points DESC,
 CREATE INDEX IF NOT EXISTS idx_error_events_created_at ON error_events(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_pending_announcements_due
 ON pending_announcements(next_attempt_at ASC, id ASC);
+CREATE INDEX IF NOT EXISTS idx_ai_enhancement_jobs_due
+ON ai_enhancement_jobs(next_attempt_at ASC, expires_at ASC, id ASC);
 """

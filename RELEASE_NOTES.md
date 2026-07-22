@@ -2,6 +2,16 @@
 
 ## Reliability update - 2026-07-22
 
+- Added the first optional Groq-powered host-copy slice. New-question
+  announcements now send reliable `copy.py` text first and only then edit the
+  normal Telegram message with a validated AI intro.
+- Added durable `ai_enhancement_jobs` in SQLite. Retryable provider failures
+  and ambiguous Telegram edit failures are retried by maintenance; saved edit
+  candidates are reused without spending another model request.
+- Kept topic, difficulty, points, and links server-owned, rejected AI output
+  containing links, mentions, numbers, or excessive text, and left every AI
+  flag disabled by default.
+- Added `/kvizi_ai_status` plus non-secret AI readiness fields to `/health`.
 - Reconciled Telegram's `poll can't be stopped` response as an already closed
   poll instead of leaving it active and logging the same stop failure repeatedly.
 - Added a durable SQLite retry queue for announcement messages that hit an

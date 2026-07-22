@@ -4,6 +4,7 @@ import hmac
 
 from flask import Flask, abort, jsonify, request
 
+from kvizi.ai import AIProvider, GroqProvider
 from kvizi.config import Settings, load_settings
 from kvizi.database import KviziRepository, utc_now_iso
 from kvizi.service import KviziService
@@ -31,13 +32,26 @@ def create_app(
     settings: Settings | None = None,
     repository: KviziRepository | None = None,
     telegram: TelegramClient | None = None,
+    ai_provider: AIProvider | None = None,
 ) -> Flask:
     settings = settings or load_settings()
     repository = repository or KviziRepository(settings.database_path)
     telegram = telegram or TelegramClient(settings.telegram_bot_token)
+    if (
+        ai_provider is None
+        and settings.ai_enabled
+        and settings.ai_copy_enabled
+        and settings.groq_api_key
+    ):
+        ai_provider = GroqProvider(settings.groq_api_key, settings.ai_copy_model)
 
     repository.init_db()
-    service = KviziService(settings=settings, repository=repository, telegram=telegram)
+    service = KviziService(
+        settings=settings,
+        repository=repository,
+        telegram=telegram,
+        ai_provider=ai_provider,
+    )
     load_error = ""
     try:
         service.reload_questions()
@@ -60,6 +74,8 @@ def create_app(
                     "questions": questions_count,
                     "configuration_ok": configured,
                     "questions_loaded": not bool(app.config["KVIZI_LOAD_ERROR"]),
+                    "ai_copy_enabled": settings.ai_enabled and settings.ai_copy_enabled,
+                    "ai_provider_configured": ai_provider is not None,
                 }
             ),
             200 if ok else 503,
@@ -134,13 +150,15 @@ def create_app(
         started_at = utc_now_iso()
         try:
             closed = service.close_expired_polls()
-            message = f"Closed expired polls: {closed}"
+            ai_enhanced = service.retry_ai_enhancements()
+            message = f"Closed expired polls: {closed}; AI enhanced: {ai_enhanced}"
             status = "maintenance_closed" if closed else "maintenance_ok"
             repository.record_cron_run(started_at, utc_now_iso(), status, message)
             return jsonify(
                 {
                     "ok": True,
                     "closed": closed,
+                    "ai_enhanced": ai_enhanced,
                     "message": message,
                 }
             )

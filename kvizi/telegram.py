@@ -47,6 +47,22 @@ class TelegramClient:
             payload["message_thread_id"] = message_thread_id
         return self._request("sendMessage", payload)
 
+    def edit_message_text(
+        self,
+        *,
+        chat_id: str,
+        message_id: int,
+        text: str,
+    ) -> dict[str, Any]:
+        return self._request(
+            "editMessageText",
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "text": text,
+            },
+        )
+
     def send_document(
         self,
         *,

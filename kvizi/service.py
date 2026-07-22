@@ -15,6 +15,7 @@ from typing import Any
 
 from kvizi import __version__
 from kvizi import copy
+from kvizi.ai import AIProvider, AIProviderError, normalize_short_intro
 from kvizi.config import PROJECT_ROOT, Settings
 from kvizi.database import KviziRepository, utc_now_iso
 from kvizi.database_backup import create_database_backup
@@ -33,6 +34,8 @@ ANSWER_DELIVERY_GRACE_SECONDS = 3600
 MISMATCH_DELIVERY_GRACE_SECONDS = 86400
 ANNOUNCEMENT_RETRY_DELAY_SECONDS = 300
 ANNOUNCEMENT_MAX_ATTEMPTS = 3
+AI_INTRO_MAX_CHARS = 180
+TELEGRAM_MAX_MESSAGE_CHARS = 4096
 TRANSIENT_TELEGRAM_ERROR_MARKERS = (
     "503 service unavailable",
     "unable to connect to proxy",
@@ -100,6 +103,7 @@ class KviziService:
         question_bank: QuestionBank | None = None,
         router: TopicRouter | None = None,
         rng: random.Random | None = None,
+        ai_provider: AIProvider | None = None,
     ) -> None:
         self.settings = settings
         self.repository = repository
@@ -107,6 +111,7 @@ class KviziService:
         self.question_bank = question_bank or QuestionBank([])
         self.router = router or TopicRouter(rng)
         self.rng = rng or random.Random()
+        self.ai_provider = ai_provider
 
     def reload_questions(self) -> int:
         self.question_bank = load_questions(self.settings.questions_path)
@@ -670,6 +675,10 @@ class KviziService:
             )
             return {"ok": True, "command": command}
 
+        if command == "/kvizi_ai_status":
+            self._reply(message, self._format_ai_status())
+            return {"ok": True, "command": command}
+
         if command == "/kvizi_voice_preview":
             self._reply(message, copy.voice_preview_text(self.rng.choice))
             return {"ok": True, "command": command}
@@ -1034,6 +1043,23 @@ class KviziService:
             "risk_failures": self.settings.announce_risk_failures,
             "streaks": self.settings.announce_streaks,
         }
+
+    def _format_ai_status(self) -> str:
+        feature_enabled = self.settings.ai_enabled and self.settings.ai_copy_enabled
+        provider_name = getattr(self.ai_provider, "name", "none")
+        model = getattr(self.ai_provider, "model", self.settings.ai_copy_model)
+        return "\n".join(
+            (
+                "AI Квизи:",
+                f"- генерация подводок: {'ON' if feature_enabled else 'OFF'}",
+                f"- провайдер готов: {'да' if self.ai_provider is not None else 'нет'}",
+                f"- provider/model: {provider_name}/{model}",
+                f"- ожидают улучшения: {self.repository.pending_ai_enhancement_count()}",
+                f"- timeout: {self.settings.ai_timeout_seconds:g}с, "
+                f"попыток: {self.settings.ai_max_attempts}",
+                "Игровые факты всегда формирует сервер; при сбое остаётся текст copy.py.",
+            )
+        )
 
     def _format_status(self) -> str:
         now_iso = utc_now_iso()
@@ -2068,15 +2094,23 @@ class KviziService:
         if not question_link:
             return
 
+        points = base_points(question.difficulty, self.settings.difficulty_points)
         self._send_announcement(
             text=copy.question_announcement(
                 route.topic_key,
                 question.difficulty,
                 question_link,
-                base_points(question.difficulty, self.settings.difficulty_points),
+                points,
                 self.rng.choice,
             ),
             event="question_announcement_failed",
+            ai_purpose="question_announcement",
+            ai_context={
+                "topic_key": route.topic_key,
+                "difficulty": question.difficulty,
+                "base_points": points,
+                "question_link": question_link,
+            },
         )
 
     def _announce_no_answers_closed(self, poll: dict[str, Any]) -> None:
@@ -2111,12 +2145,22 @@ class KviziService:
         text: str,
         event: str,
         message_thread_id: int | None = None,
+        ai_purpose: str = "",
+        ai_context: dict[str, Any] | None = None,
     ) -> bool:
         thread_id = self._announce_thread_id() if message_thread_id is None else message_thread_id
         if thread_id is None:
             return False
 
         now = datetime.now(timezone.utc)
+        ai_context_json = ""
+        if self._ai_copy_active() and ai_purpose and ai_context:
+            ai_context_json = json.dumps(
+                ai_context,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
         dedupe_source = f"{thread_id}\0{event}\0{text}".encode("utf-8")
         pending, inserted = self.repository.enqueue_pending_announcement(
             dedupe_key=hashlib.sha256(dedupe_source).hexdigest(),
@@ -2127,6 +2171,8 @@ class KviziService:
                 now + timedelta(seconds=ANNOUNCEMENT_RETRY_DELAY_SECONDS)
             ).isoformat(),
             created_at=now.isoformat(),
+            ai_purpose=ai_purpose if ai_context_json else "",
+            ai_context_json=ai_context_json,
         )
         if not inserted:
             return False
@@ -2166,7 +2212,7 @@ class KviziService:
         announcement_id = int(pending["id"])
         attempt_count = int(pending["attempt_count"]) + 1
         try:
-            self.telegram.send_message(
+            sent = self.telegram.send_message(
                 chat_id=self.settings.telegram_chat_id,
                 message_thread_id=int(pending["message_thread_id"]),
                 text=str(pending["text"]),
@@ -2203,7 +2249,314 @@ class KviziService:
             return False
 
         self.repository.delete_pending_announcement(announcement_id)
+        self._schedule_ai_enhancement(
+            pending,
+            sent=sent,
+            now=now,
+            attempt_now=initial_attempt,
+        )
         return True
+
+    def _ai_copy_active(self) -> bool:
+        return bool(
+            self.settings.ai_enabled
+            and self.settings.ai_copy_enabled
+            and self.ai_provider is not None
+        )
+
+    def _schedule_ai_enhancement(
+        self,
+        pending: dict[str, Any],
+        *,
+        sent: dict[str, Any],
+        now: datetime,
+        attempt_now: bool,
+    ) -> None:
+        purpose = str(pending.get("ai_purpose") or "")
+        context_json = str(pending.get("ai_context_json") or "")
+        if not self._ai_copy_active() or not purpose or not context_json:
+            return
+
+        result = sent.get("result") if isinstance(sent, dict) else None
+        message_id = result.get("message_id") if isinstance(result, dict) else None
+        if message_id is None:
+            self.repository.record_error_event(
+                source="ai",
+                event="ai_job_enqueue_failed",
+                message=f"purpose={purpose}: Telegram sendMessage returned no message_id",
+                created_at=now.isoformat(),
+            )
+            return
+
+        try:
+            message_id = int(message_id)
+            dedupe_source = (
+                f"{self.settings.telegram_chat_id}\0{message_id}\0{purpose}"
+            ).encode("utf-8")
+            job, inserted = self.repository.enqueue_ai_enhancement(
+                dedupe_key=hashlib.sha256(dedupe_source).hexdigest(),
+                purpose=purpose,
+                chat_id=self.settings.telegram_chat_id,
+                message_thread_id=int(pending["message_thread_id"]),
+                telegram_message_id=message_id,
+                base_text=str(pending["text"]),
+                context_json=context_json,
+                next_attempt_at=now.isoformat(),
+                expires_at=(
+                    now + timedelta(seconds=self.settings.ai_job_ttl_seconds)
+                ).isoformat(),
+                created_at=now.isoformat(),
+            )
+        except Exception as exc:
+            self.repository.record_error_event(
+                source="ai",
+                event="ai_job_enqueue_failed",
+                message=f"purpose={purpose}: {type(exc).__name__}: {exc}",
+                created_at=now.isoformat(),
+            )
+            return
+
+        if inserted and attempt_now:
+            self._claim_and_deliver_ai_enhancement(job, now=now)
+
+    def retry_ai_enhancements(
+        self,
+        *,
+        now: datetime | None = None,
+        limit: int = 1,
+    ) -> int:
+        current = now or datetime.now(timezone.utc)
+        self.repository.delete_expired_ai_enhancements(current.isoformat())
+        if not self._ai_copy_active():
+            return 0
+
+        delivered = 0
+        for job in self.repository.ai_enhancements_due(current.isoformat(), limit=limit):
+            if self._claim_and_deliver_ai_enhancement(job, now=current):
+                delivered += 1
+        return delivered
+
+    def _claim_and_deliver_ai_enhancement(
+        self,
+        job: dict[str, Any],
+        *,
+        now: datetime,
+    ) -> bool:
+        job_id = int(job["id"])
+        claim_key = f"ai_enhancement:{job_id}"
+        if not self.repository.try_claim_operation(
+            claim_key,
+            claimed_at=now.isoformat(),
+            expires_at=(now + timedelta(seconds=OPERATION_CLAIM_SECONDS)).isoformat(),
+        ):
+            return False
+        try:
+            return self._deliver_ai_enhancement(job, now=now)
+        finally:
+            self.repository.release_operation(claim_key)
+
+    def _deliver_ai_enhancement(self, job: dict[str, Any], *, now: datetime) -> bool:
+        job_id = int(job["id"])
+        attempt_count = int(job["attempt_count"]) + 1
+        candidate_text = str(job.get("candidate_text") or "")
+
+        if not candidate_text:
+            provider = self.ai_provider
+            if provider is None:
+                return False
+            try:
+                context = json.loads(str(job["context_json"]))
+                if not isinstance(context, dict):
+                    raise ValueError("AI context must be a JSON object")
+                result = provider.complete(
+                    self._ai_copy_messages(str(job["purpose"]), context),
+                    purpose=str(job["purpose"]),
+                    timeout_seconds=self.settings.ai_timeout_seconds,
+                )
+                intro = normalize_short_intro(result.text, max_chars=AI_INTRO_MAX_CHARS)
+                candidate_text = self._render_ai_enhancement(
+                    str(job["purpose"]),
+                    intro,
+                    context,
+                )
+                self.repository.set_ai_enhancement_candidate(
+                    job_id,
+                    candidate_text=candidate_text,
+                    updated_at=now.isoformat(),
+                )
+            except AIProviderError as exc:
+                return self._handle_ai_enhancement_failure(
+                    job,
+                    now=now,
+                    attempt_count=attempt_count,
+                    error=exc,
+                    event="ai_provider_failed",
+                )
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                error = AIProviderError(
+                    f"Invalid AI enhancement context: {exc}",
+                    kind="invalid_context",
+                    retryable=False,
+                )
+                return self._handle_ai_enhancement_failure(
+                    job,
+                    now=now,
+                    attempt_count=attempt_count,
+                    error=error,
+                    event="ai_provider_failed",
+                )
+            except Exception as exc:
+                error = AIProviderError(
+                    f"Unexpected AI provider failure: {type(exc).__name__}: {exc}",
+                    kind="provider_exception",
+                    retryable=True,
+                )
+                return self._handle_ai_enhancement_failure(
+                    job,
+                    now=now,
+                    attempt_count=attempt_count,
+                    error=error,
+                    event="ai_provider_failed",
+                )
+
+        try:
+            self.telegram.edit_message_text(
+                chat_id=str(job["chat_id"]),
+                message_id=int(job["telegram_message_id"]),
+                text=candidate_text,
+            )
+        except TelegramApiError as exc:
+            if "message is not modified" in str(exc).lower():
+                self.repository.delete_ai_enhancement(job_id)
+                return True
+            error = AIProviderError(
+                str(exc),
+                kind="telegram_edit",
+                retryable=exc.ambiguous,
+            )
+            return self._handle_ai_enhancement_failure(
+                job,
+                now=now,
+                attempt_count=attempt_count,
+                error=error,
+                event="ai_edit_failed",
+            )
+
+        self.repository.delete_ai_enhancement(job_id)
+        return True
+
+    def _handle_ai_enhancement_failure(
+        self,
+        job: dict[str, Any],
+        *,
+        now: datetime,
+        attempt_count: int,
+        error: AIProviderError,
+        event: str,
+    ) -> bool:
+        job_id = int(job["id"])
+        retry_delay = self.settings.ai_retry_delay_seconds
+        if error.retry_after_seconds is not None:
+            retry_delay = max(retry_delay, int(error.retry_after_seconds + 0.999))
+        next_attempt = now + timedelta(seconds=retry_delay)
+        expires_at = datetime.fromisoformat(str(job["expires_at"]))
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+
+        if (
+            error.retryable
+            and attempt_count < self.settings.ai_max_attempts
+            and next_attempt < expires_at
+        ):
+            self.repository.reschedule_ai_enhancement(
+                job_id,
+                attempt_count=attempt_count,
+                next_attempt_at=next_attempt.isoformat(),
+                last_error=f"{error.kind}: {error}",
+                updated_at=now.isoformat(),
+            )
+            return False
+
+        self.repository.delete_ai_enhancement(job_id)
+        self.repository.record_error_event(
+            source="ai" if event == "ai_provider_failed" else "telegram",
+            event=event,
+            message=(
+                f"purpose={job['purpose']}, attempts={attempt_count}, "
+                f"kind={error.kind}: {error}"
+            ),
+            created_at=now.isoformat(),
+        )
+        return False
+
+    def _ai_copy_messages(
+        self,
+        purpose: str,
+        context: dict[str, Any],
+    ) -> list[dict[str, str]]:
+        return [
+            {
+                "role": "system",
+                "content": (
+                    "Ты Квизи — ироничный цифровой ведущий технического квиза. "
+                    "Верни только одну живую русскую подводку одним предложением, "
+                    "не длиннее 180 символов. Не используй Markdown, ссылки, упоминания, "
+                    "цифры и не повторяй факты: они будут добавлены сервером."
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {"purpose": purpose, "facts": context},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+            },
+        ]
+
+    def _render_ai_enhancement(
+        self,
+        purpose: str,
+        intro: str,
+        context: dict[str, Any],
+    ) -> str:
+        if purpose != "question_announcement":
+            raise AIProviderError(
+                f"Unsupported AI copy purpose: {purpose}",
+                kind="invalid_context",
+                retryable=False,
+            )
+
+        topic_key = str(context.get("topic_key") or "").strip()
+        difficulty = str(context.get("difficulty") or "").strip()
+        question_link = str(context.get("question_link") or "").strip()
+        try:
+            points = int(context["base_points"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise AIProviderError(
+                "AI context has invalid base_points",
+                kind="invalid_context",
+                retryable=False,
+            ) from exc
+        if not topic_key or not difficulty or not question_link.startswith("https://t.me/"):
+            raise AIProviderError(
+                "AI context is missing trusted question facts",
+                kind="invalid_context",
+                retryable=False,
+            )
+
+        text = (
+            f"{intro}\n"
+            f"Сектор: {topic_key} · сложность: {difficulty} · база: {points}\n"
+            f"{question_link}"
+        )
+        if len(text) > TELEGRAM_MAX_MESSAGE_CHARS:
+            raise AIProviderError(
+                "AI-enhanced Telegram message is too long",
+                kind="invalid_output",
+                retryable=False,
+            )
+        return text
 
     def _message_link(self, message_id: int) -> str | None:
         username = self.settings.chat_username

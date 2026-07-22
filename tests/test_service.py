@@ -15,6 +15,7 @@ from typing import Any
 import pytest
 
 from kvizi import copy
+from kvizi.ai import AIProviderError, AIResult
 from kvizi.config import Settings
 from kvizi.database import KviziRepository, utc_now_iso
 from kvizi.questions import Question, QuestionBank
@@ -27,6 +28,7 @@ class FakeTelegram:
     def __init__(self) -> None:
         self.sent_polls: list[dict[str, Any]] = []
         self.sent_messages: list[dict[str, Any]] = []
+        self.edited_messages: list[dict[str, Any]] = []
         self.sent_documents: list[dict[str, Any]] = []
         self.callback_answers: list[dict[str, Any]] = []
         self.stopped_polls: list[dict[str, Any]] = []
@@ -41,6 +43,10 @@ class FakeTelegram:
         self.sent_messages.append(payload)
         return {"ok": True, "result": {"message_id": 100 + len(self.sent_messages)}}
 
+    def edit_message_text(self, **payload: Any) -> dict[str, Any]:
+        self.edited_messages.append(payload)
+        return {"ok": True, "result": {"message_id": payload["message_id"]}}
+
     def send_document(self, **payload: Any) -> dict[str, Any]:
         self.sent_documents.append(payload)
         return {"ok": True, "result": {"message_id": 200 + len(self.sent_documents)}}
@@ -54,6 +60,64 @@ class FakeTelegram:
 
     def download_file(self, file_id: str) -> bytes:
         return self.downloaded_files[file_id]
+
+
+class FakeAIProvider:
+    name = "fake"
+    model = "fake-copy-model"
+
+    def __init__(self, outcomes: list[str | Exception]) -> None:
+        self.outcomes = list(outcomes)
+        self.calls: list[dict[str, Any]] = []
+
+    def complete(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        purpose: str,
+        timeout_seconds: float,
+    ) -> AIResult:
+        self.calls.append(
+            {
+                "messages": messages,
+                "purpose": purpose,
+                "timeout_seconds": timeout_seconds,
+            }
+        )
+        if not self.outcomes:
+            raise AssertionError("FakeAIProvider has no configured outcome")
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return AIResult(
+            text=outcome,
+            provider=self.name,
+            model=self.model,
+            latency_ms=1,
+        )
+
+
+class BlockingAIProvider(FakeAIProvider):
+    def __init__(self, outcome: str) -> None:
+        super().__init__([outcome])
+        self.entered = Event()
+        self.release = Event()
+
+    def complete(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        purpose: str,
+        timeout_seconds: float,
+    ) -> AIResult:
+        self.entered.set()
+        if not self.release.wait(timeout=5):
+            raise TimeoutError("test did not release AI provider")
+        return super().complete(
+            messages,
+            purpose=purpose,
+            timeout_seconds=timeout_seconds,
+        )
 
 
 class FailOnceSendMessageTelegram(FakeTelegram):
@@ -74,6 +138,18 @@ class FailOnceSendMessageTelegram(FakeTelegram):
 class AlwaysFailSendMessageTelegram(FakeTelegram):
     def send_message(self, **payload: Any) -> dict[str, Any]:
         raise TelegramApiError("temporary proxy 503", ambiguous=True)
+
+
+class FailOnceEditMessageTelegram(FakeTelegram):
+    def __init__(self) -> None:
+        super().__init__()
+        self.edit_attempts = 0
+
+    def edit_message_text(self, **payload: Any) -> dict[str, Any]:
+        self.edit_attempts += 1
+        if self.edit_attempts == 1:
+            raise TelegramApiError("temporary proxy 503", ambiguous=True)
+        return super().edit_message_text(**payload)
 
 
 class FailDocumentForChatTelegram(FakeTelegram):
@@ -151,6 +227,14 @@ def make_settings(tmp_path: Path) -> Settings:
         announce_no_answers=True,
         announce_risk_failures=True,
         announce_streaks=True,
+        ai_enabled=False,
+        ai_copy_enabled=False,
+        groq_api_key="",
+        ai_copy_model="llama-3.1-8b-instant",
+        ai_timeout_seconds=7.0,
+        ai_retry_delay_seconds=300,
+        ai_max_attempts=3,
+        ai_job_ttl_seconds=1800,
         difficulty_points={"easy": 5, "normal": 10, "hard": 15},
         challenge_economy={
             "easy": {"cost": 5, "reward": 10},
@@ -202,6 +286,34 @@ def make_service(tmp_path: Path) -> tuple[KviziService, KviziRepository, FakeTel
     return service, repository, telegram
 
 
+def make_ai_service(
+    tmp_path: Path,
+    provider: FakeAIProvider,
+    *,
+    telegram: FakeTelegram | None = None,
+) -> tuple[KviziService, KviziRepository, FakeTelegram]:
+    settings = replace(
+        make_settings(tmp_path),
+        ai_enabled=True,
+        ai_copy_enabled=True,
+        ai_retry_delay_seconds=1,
+        ai_job_ttl_seconds=60,
+    )
+    repository = KviziRepository(settings.database_path)
+    repository.init_db()
+    repository.bind_topic("network", 101, 1)
+    repository.set_bot_setting("announce_thread_id", "999")
+    telegram = telegram or FakeTelegram()
+    service = KviziService(
+        settings=settings,
+        repository=repository,
+        telegram=telegram,  # type: ignore[arg-type]
+        question_bank=make_question_bank(),
+        ai_provider=provider,
+    )
+    return service, repository, telegram
+
+
 def _daily_title_matches(text: str) -> bool:
     first_line = text.splitlines()[0]
     return any(
@@ -224,6 +336,45 @@ def test_database_uses_wal_and_busy_timeout(tmp_path: Path) -> None:
 
     assert journal_mode.lower() == "wal"
     assert busy_timeout == 5000
+
+
+def test_database_migrates_existing_announcement_queue_for_ai(tmp_path: Path) -> None:
+    database_path = tmp_path / "legacy.sqlite3"
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE pending_announcements (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                dedupe_key TEXT NOT NULL UNIQUE,
+                message_thread_id INTEGER NOT NULL,
+                text TEXT NOT NULL,
+                event TEXT NOT NULL,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                next_attempt_at TEXT NOT NULL,
+                last_error TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+
+    repository = KviziRepository(database_path)
+    repository.init_db()
+
+    with repository.connect() as connection:
+        pending_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(pending_announcements)")
+        }
+        tables = {
+            row["name"]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+
+    assert {"ai_purpose", "ai_context_json"} <= pending_columns
+    assert "ai_enhancement_jobs" in tables
 
 
 def test_post_bet_answer_updates_score_and_is_idempotent(tmp_path: Path) -> None:
@@ -1936,6 +2087,190 @@ def test_announcement_retry_stops_after_max_attempts(tmp_path: Path) -> None:
     assert "attempts=3" in events[0]["message"]
 
 
+def test_ai_question_copy_sends_static_text_then_edits_safe_facts(tmp_path: Path) -> None:
+    provider = FakeAIProvider(["Пульт мигнул зелёным: новый вопрос уже в эфире."])
+    service, repository, telegram = make_ai_service(tmp_path, provider)
+
+    posted = service.post_question(difficulty="normal")
+
+    assert posted.posted is True
+    assert len(telegram.sent_messages) == 1
+    assert len(telegram.edited_messages) == 1
+    edited = telegram.edited_messages[0]
+    assert edited["chat_id"] == "-1001"
+    assert edited["message_id"] == 101
+    assert edited["text"].startswith("Пульт мигнул зелёным")
+    assert "Сектор: network · сложность: normal · база: 10" in edited["text"]
+    assert edited["text"].endswith("https://t.me/c/1/1")
+    assert repository.pending_ai_enhancement_count() == 0
+    assert provider.calls[0]["purpose"] == "question_announcement"
+    assert provider.calls[0]["timeout_seconds"] == 7.0
+    assert '"base_points": 10' in provider.calls[0]["messages"][1]["content"]
+
+
+def test_retryable_ai_failure_keeps_static_copy_and_edits_later(tmp_path: Path) -> None:
+    provider = FakeAIProvider(
+        [
+            AIProviderError(
+                "Groq HTTP 429",
+                kind="rate_limit",
+                retryable=True,
+                retry_after_seconds=0,
+            ),
+            "Квизи дёрнул рубильник: вопрос вышел на сцену.",
+        ]
+    )
+    service, repository, telegram = make_ai_service(tmp_path, provider)
+
+    posted = service.post_question(difficulty="normal")
+
+    assert posted.posted is True
+    assert len(telegram.sent_messages) == 1
+    assert telegram.edited_messages == []
+    assert repository.pending_ai_enhancement_count() == 1
+
+    delivered = service.retry_ai_enhancements(
+        now=datetime.now(timezone.utc) + timedelta(seconds=2)
+    )
+
+    assert delivered == 1
+    assert len(telegram.edited_messages) == 1
+    assert len(provider.calls) == 2
+    assert repository.pending_ai_enhancement_count() == 0
+
+
+def test_delayed_static_announcement_still_schedules_ai_after_retry(tmp_path: Path) -> None:
+    provider = FakeAIProvider(["Квизи поднял занавес: вопрос уже ждёт ответов."])
+    service, repository, telegram = make_ai_service(
+        tmp_path,
+        provider,
+        telegram=FailOnceSendMessageTelegram(),
+    )
+
+    posted = service.post_question(difficulty="normal")
+
+    assert posted.posted is True
+    assert telegram.sent_messages == []
+    assert provider.calls == []
+
+    delivered = service.retry_pending_announcements(
+        now=datetime.now(timezone.utc) + timedelta(minutes=10)
+    )
+
+    assert delivered == 1
+    assert len(telegram.sent_messages) == 1
+    assert telegram.edited_messages == []
+    assert service.retry_ai_enhancements(
+        now=datetime.now(timezone.utc) + timedelta(minutes=10)
+    ) == 1
+    assert len(telegram.edited_messages) == 1
+    assert len(provider.calls) == 1
+    assert repository.pending_ai_enhancement_count() == 0
+
+
+def test_ai_candidate_is_reused_when_telegram_edit_needs_retry(tmp_path: Path) -> None:
+    provider = FakeAIProvider(["Лампы вспыхнули: вопрос занял своё место."])
+    service, repository, telegram = make_ai_service(
+        tmp_path,
+        provider,
+        telegram=FailOnceEditMessageTelegram(),
+    )
+
+    posted = service.post_question(difficulty="normal")
+
+    assert posted.posted is True
+    assert repository.pending_ai_enhancement_count() == 1
+    assert len(provider.calls) == 1
+
+    delivered = service.retry_ai_enhancements(
+        now=datetime.now(timezone.utc) + timedelta(seconds=2)
+    )
+
+    assert delivered == 1
+    assert len(provider.calls) == 1
+    assert telegram.edit_attempts == 2
+    assert len(telegram.edited_messages) == 1
+    assert repository.pending_ai_enhancement_count() == 0
+
+
+def test_overlapping_ai_retries_claim_one_job_once(tmp_path: Path) -> None:
+    provider = BlockingAIProvider("Пульт проснулся: вопрос уже ждёт смельчаков.")
+    service, repository, telegram = make_ai_service(tmp_path, provider)
+    now = datetime.now(timezone.utc)
+    repository.enqueue_ai_enhancement(
+        dedupe_key="overlapping-ai-retry",
+        purpose="question_announcement",
+        chat_id="-1001",
+        message_thread_id=999,
+        telegram_message_id=555,
+        base_text="Static copy",
+        context_json=json.dumps(
+            {
+                "topic_key": "network",
+                "difficulty": "normal",
+                "base_points": 10,
+                "question_link": "https://t.me/c/1/1",
+            }
+        ),
+        next_attempt_at=(now - timedelta(seconds=1)).isoformat(),
+        expires_at=(now + timedelta(minutes=1)).isoformat(),
+        created_at=now.isoformat(),
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(service.retry_ai_enhancements, now=now)
+        assert provider.entered.wait(timeout=2)
+        second = executor.submit(service.retry_ai_enhancements, now=now)
+        assert second.result(timeout=2) == 0
+        provider.release.set()
+        assert first.result(timeout=2) == 1
+
+    assert len(provider.calls) == 1
+    assert len(telegram.edited_messages) == 1
+    assert repository.pending_ai_enhancement_count() == 0
+
+
+def test_ai_copy_flags_off_do_not_call_provider(tmp_path: Path) -> None:
+    provider = FakeAIProvider(["Не должно использоваться."])
+    service, repository, telegram = make_service(tmp_path)
+    service.ai_provider = provider
+    repository.set_bot_setting("announce_thread_id", "999")
+
+    posted = service.post_question(difficulty="normal")
+
+    assert posted.posted is True
+    assert len(telegram.sent_messages) == 1
+    assert telegram.edited_messages == []
+    assert provider.calls == []
+    assert repository.pending_ai_enhancement_count() == 0
+
+
+def test_admin_ai_status_does_not_call_provider(tmp_path: Path) -> None:
+    provider = FakeAIProvider([])
+    service, _repository, telegram = make_ai_service(tmp_path, provider)
+
+    result = service.handle_update(
+        {
+            "update_id": 902,
+            "message": {
+                "message_id": 88,
+                "message_thread_id": 101,
+                "chat": {"id": "-1001"},
+                "from": {"id": 7, "first_name": "Admin"},
+                "text": "/kvizi_ai_status",
+            },
+        }
+    )
+
+    assert result["command"] == "/kvizi_ai_status"
+    text = telegram.sent_messages[-1]["text"]
+    assert "AI Квизи:" in text
+    assert "генерация подводок: ON" in text
+    assert "fake/fake-copy-model" in text
+    assert "ожидают улучшения: 0" in text
+    assert provider.calls == []
+
+
 def test_admin_status_reports_loaded_questions_topics_active_polls_and_cron(tmp_path: Path) -> None:
     service, repository, telegram = make_service(tmp_path)
     repository.upsert_user({"id": 7, "username": "adminuser", "first_name": "Admin"})
@@ -3314,6 +3649,30 @@ def test_empty_secrets_cannot_authorize_webhook_or_cron(tmp_path: Path) -> None:
 
     assert cron.status_code == 403
     assert webhook.status_code == 404
+
+
+def test_create_app_wires_groq_provider_only_when_ai_copy_is_configured(tmp_path: Path) -> None:
+    settings = replace(
+        make_settings(tmp_path),
+        ai_enabled=True,
+        ai_copy_enabled=True,
+        groq_api_key="groq-secret",
+    )
+    settings.questions_path.write_text(
+        "id,topic_key,difficulty,question,option_1,option_2,option_3,option_4,"
+        "option_5,option_6,correct_option_ids,explanation,source\n"
+        "q1,network,normal,Question?,A,B,C,D,,,1,Because,\n",
+        encoding="utf-8",
+    )
+
+    app = create_app(settings=settings, telegram=FakeTelegram())  # type: ignore[arg-type]
+    service = app.config["KVIZI_SERVICE"]
+    health = app.test_client().get("/health").get_json()
+
+    assert service.ai_provider.name == "groq"
+    assert service.ai_provider.model == "llama-3.1-8b-instant"
+    assert health["ai_copy_enabled"] is True
+    assert health["ai_provider_configured"] is True
 
 
 def test_flask_cron_skips_when_topic_has_active_poll(tmp_path: Path) -> None:

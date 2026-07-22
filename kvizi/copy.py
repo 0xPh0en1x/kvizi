@@ -137,6 +137,7 @@ ADMIN_HELP_TEXT = (
     "/kvizi_version - версия кода и пути deploy\n"
     "/kvizi_status - подробный статус\n"
     "/kvizi_status_compact - короткий статус\n"
+    "/kvizi_ai_status - состояние AI-подводок и очереди\n"
     "/kvizi_recent - последние вопросы и ответы\n"
     "/kvizi_errors - свежие ошибки и история Telegram/cron\n"
     "/kvizi_review - ревизия качества вопросов\n"

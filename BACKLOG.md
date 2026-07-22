@@ -2,7 +2,7 @@
 
 ## AI-flavored Kvizi phrases
 
-Status: design agreed; implementation has not started.
+Status: first progressive-copy slice implemented; conversations and g4f remain.
 
 The complete design for provider-neutral host copy and Reddit-like Telegram
 discussion threads is recorded in [`AI_DESIGN.md`](AI_DESIGN.md). It covers
@@ -32,12 +32,23 @@ Guardrails:
 - keep it optional behind `KVIZI_AI_ENABLED=1`;
 - expect `g4f` providers to be unstable and possibly incompatible with PythonAnywhere free outbound/network limits.
 
-The first implementation slice remains:
+Implemented in the first slice:
 
-1. Add `kvizi/ai.py` with a provider interface, Groq adapter, and no-op fallback.
-2. Keep all AI flags off by default.
-3. Generate only a one- or two-sentence announcement suffix from structured facts.
-4. Preserve `kvizi/copy.py` as the guaranteed fallback.
-5. Cover timeout/fallback behavior with tests before enabling anything remotely.
+1. `kvizi/ai.py` contains the provider interface and official Groq adapter.
+2. All AI flags are off by default; a missing key means a disabled provider path.
+3. New-question announcements send `copy.py` first and are edited only after a
+   validated AI intro arrives; structured facts stay server-owned.
+4. Timeout/429/5xx/network failures use a durable SQLite queue processed by
+   `/cron/maintenance`; Telegram edit retries reuse the saved candidate text.
+5. Provider, validation, migration, delayed-send, retry, edit, and disabled-flag
+   behavior are covered by tests.
+
+Next AI slices:
+
+1. Expand progressive copy event-by-event to results, streaks, risk and daily recap.
+2. Add `/kvizi_ai_check` plus provider metrics/circuit breaker.
+3. Implement Reddit-like Reply/Quote discussion branches with Groq.
+4. Add an explicit, remotely smoke-tested no-auth g4f allowlist only after the
+   official provider path is stable on PythonAnywhere.
 
 Do later, after core quiz operations stay stable in the real Telegram group.
