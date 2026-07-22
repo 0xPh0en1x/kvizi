@@ -154,8 +154,6 @@ class GroqProvider:
                     "reasoning_effort": "none",
                     "temperature": 0.7,
                     "top_p": 0.8,
-                    "top_k": 20,
-                    "min_p": 0,
                     "presence_penalty": 1.5,
                 }
             )

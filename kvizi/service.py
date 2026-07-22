@@ -284,7 +284,11 @@ class KviziService:
             claimed_at=claimed_at.isoformat(),
             expires_at=(claimed_at + timedelta(seconds=OPERATION_CLAIM_SECONDS)).isoformat(),
         ):
-            return PostQuestionResult(False, f"В теме {route.topic_key} вопрос уже публикуется.")
+            return PostQuestionResult(
+                False,
+                "Предыдущая публикация ещё выполняется или проверяется после сбоя Telegram. "
+                "Подожди до 5 минут и проверь /kvizi_status перед повтором.",
+            )
 
         release_claim = True
         delivery_attempted = False

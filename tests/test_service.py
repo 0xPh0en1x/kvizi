@@ -3712,6 +3712,8 @@ def test_concurrent_question_posts_use_durable_global_claim(tmp_path: Path) -> N
 
     assert first.posted is True
     assert second.posted is False
+    assert "проверяется после сбоя Telegram" in second.message
+    assert "до 5 минут" in second.message
     assert len(telegram.sent_polls) == 1
     assert len(repository.active_polls(utc_now_iso())) == 1
 

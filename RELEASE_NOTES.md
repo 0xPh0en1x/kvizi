@@ -4,6 +4,10 @@
 
 - Switched the default AI copy model to `qwen/qwen3.6-27b` in non-reasoning
   mode with Groq JSON output settings recommended for this model.
+- Limited Qwen sampling options to fields accepted by Groq Chat Completions;
+  the model card mentions `top_k`/`min_p`, but the API rejects these properties.
+- Clarified the five-minute publication guard shown after an ambiguous Telegram
+  send failure, instead of claiming that a particular topic is definitely busy.
 - Added the versioned `question-teaser-v1` prompt-skill with persona rules,
   few-shot examples, anti-examples, and a validated exact-question anchor.
 - Added admin-only `/kvizi_ai_preview [topic]`: it generates three variants

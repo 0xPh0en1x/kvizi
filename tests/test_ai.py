@@ -49,8 +49,8 @@ def test_groq_provider_returns_completion_and_uses_short_output(monkeypatch: Any
     assert calls[0]["headers"]["Authorization"] == "Bearer secret-key"
     assert calls[0]["json"]["temperature"] == 0.7
     assert calls[0]["json"]["top_p"] == 0.8
-    assert calls[0]["json"]["top_k"] == 20
-    assert calls[0]["json"]["min_p"] == 0
+    assert "top_k" not in calls[0]["json"]
+    assert "min_p" not in calls[0]["json"]
     assert calls[0]["json"]["presence_penalty"] == 1.5
     assert calls[0]["json"]["reasoning_effort"] == "none"
     assert calls[0]["json"]["response_format"] == {"type": "json_object"}
