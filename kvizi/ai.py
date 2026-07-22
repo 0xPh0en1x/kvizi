@@ -91,12 +91,7 @@ class GroqProvider:
                     "Authorization": f"Bearer {self.api_key}",
                     "Content-Type": "application/json",
                 },
-                json={
-                    "model": self.model,
-                    "messages": messages,
-                    "temperature": 0.6,
-                    "max_completion_tokens": 96,
-                },
+                json=self._request_payload(messages),
                 timeout=timeout_seconds,
             )
         except requests.Timeout as exc:
@@ -145,6 +140,28 @@ class GroqProvider:
             model=self.model,
             latency_ms=latency_ms,
         )
+
+    def _request_payload(self, messages: list[dict[str, str]]) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            "max_completion_tokens": 160,
+            "response_format": {"type": "json_object"},
+        }
+        if self.model.casefold().startswith("qwen/qwen3.6-"):
+            payload.update(
+                {
+                    "reasoning_effort": "none",
+                    "temperature": 0.7,
+                    "top_p": 0.8,
+                    "top_k": 20,
+                    "min_p": 0,
+                    "presence_penalty": 1.5,
+                }
+            )
+        else:
+            payload["temperature"] = 0.6
+        return payload
 
 
 def normalize_short_intro(

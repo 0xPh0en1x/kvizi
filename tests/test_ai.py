@@ -36,7 +36,7 @@ def test_groq_provider_returns_completion_and_uses_short_output(monkeypatch: Any
 
     monkeypatch.setattr(ai_module.requests, "post", fake_post)
 
-    result = GroqProvider("secret-key", "llama-3.1-8b-instant").complete(
+    result = GroqProvider("secret-key", "qwen/qwen3.6-27b").complete(
         [{"role": "user", "content": "test"}],
         purpose="question_announcement",
         timeout_seconds=2.5,
@@ -44,11 +44,17 @@ def test_groq_provider_returns_completion_and_uses_short_output(monkeypatch: Any
 
     assert result.text == "Пульт ожил, вопрос уже в эфире."
     assert result.provider == "groq"
-    assert result.model == "llama-3.1-8b-instant"
+    assert result.model == "qwen/qwen3.6-27b"
     assert calls[0]["url"] == ai_module.GROQ_CHAT_COMPLETIONS_URL
     assert calls[0]["headers"]["Authorization"] == "Bearer secret-key"
-    assert calls[0]["json"]["temperature"] == 0.6
-    assert calls[0]["json"]["max_completion_tokens"] == 96
+    assert calls[0]["json"]["temperature"] == 0.7
+    assert calls[0]["json"]["top_p"] == 0.8
+    assert calls[0]["json"]["top_k"] == 20
+    assert calls[0]["json"]["min_p"] == 0
+    assert calls[0]["json"]["presence_penalty"] == 1.5
+    assert calls[0]["json"]["reasoning_effort"] == "none"
+    assert calls[0]["json"]["response_format"] == {"type": "json_object"}
+    assert calls[0]["json"]["max_completion_tokens"] == 160
     assert calls[0]["timeout"] == 2.5
 
 

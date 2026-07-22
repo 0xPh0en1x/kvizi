@@ -97,6 +97,10 @@ class FakeAIProvider:
         )
 
 
+def ai_teaser(teaser: str, anchor: str) -> str:
+    return json.dumps({"teaser": teaser, "anchor": anchor}, ensure_ascii=False)
+
+
 class BlockingAIProvider(FakeAIProvider):
     def __init__(self, outcome: str) -> None:
         super().__init__([outcome])
@@ -230,7 +234,7 @@ def make_settings(tmp_path: Path) -> Settings:
         ai_enabled=False,
         ai_copy_enabled=False,
         groq_api_key="",
-        ai_copy_model="llama-3.1-8b-instant",
+        ai_copy_model="qwen/qwen3.6-27b",
         ai_timeout_seconds=7.0,
         ai_retry_delay_seconds=300,
         ai_max_attempts=3,
@@ -2088,7 +2092,9 @@ def test_announcement_retry_stops_after_max_attempts(tmp_path: Path) -> None:
 
 
 def test_ai_question_copy_sends_static_text_then_edits_safe_facts(tmp_path: Path) -> None:
-    provider = FakeAIProvider(["Имена ищут дорогу к адресам — проверим, кто знает их проводника."])
+    provider = FakeAIProvider(
+        [ai_teaser("Names are looking for addresses — time to identify their guide.", "Names")]
+    )
     service, repository, telegram = make_ai_service(tmp_path, provider)
 
     posted = service.post_question(difficulty="normal")
@@ -2099,16 +2105,16 @@ def test_ai_question_copy_sends_static_text_then_edits_safe_facts(tmp_path: Path
     edited = telegram.edited_messages[0]
     assert edited["chat_id"] == "-1001"
     assert edited["message_id"] == 101
-    assert edited["text"].startswith("Имена ищут дорогу к адресам")
+    assert edited["text"].startswith("Names are looking for addresses")
     assert "Сектор: network · сложность: normal · база: 10" in edited["text"]
     assert edited["text"].endswith("https://t.me/c/1/1")
     assert repository.pending_ai_enhancement_count() == 0
     assert provider.calls[0]["purpose"] == "question_announcement"
     assert provider.calls[0]["timeout_seconds"] == 7.0
     system_prompt = provider.calls[0]["messages"][0]["content"]
-    user_prompt = provider.calls[0]["messages"][1]["content"]
-    assert "напрямую связанный с предметом" in system_prompt
-    assert "не называй и не подсказывай варианты" in system_prompt
+    user_prompt = provider.calls[0]["messages"][-1]["content"]
+    assert "anchor — дословная непрерывная цитата" in system_prompt
+    assert "Не отвечай на вопрос" in system_prompt
     assert '"question": "What resolves names?"' in user_prompt
     assert '"topic": "network"' in user_prompt
     assert "DNS" not in user_prompt
@@ -2120,8 +2126,11 @@ def test_ai_question_copy_sends_static_text_then_edits_safe_facts(tmp_path: Path
 @pytest.mark.parametrize(
     "generated",
     (
-        "Похоже, здесь всё решает DNS.",
-        "Сложное сочетание слов, которое может означать одно, а значит и другое.",
+        ai_teaser("Names are assigned by DNS, so the mystery is over.", "Names"),
+        ai_teaser(
+            "Names — сложное сочетание слов, которое может означать одно, а значит и другое.",
+            "Names",
+        ),
     ),
 )
 def test_ai_question_copy_rejects_spoilers_and_low_quality_text(
@@ -2156,7 +2165,10 @@ def test_retryable_ai_failure_keeps_static_copy_and_edits_later(tmp_path: Path) 
                 retryable=True,
                 retry_after_seconds=0,
             ),
-            "Имена снова потеряли адреса — самое время найти виновный протокол.",
+            ai_teaser(
+                "Names have lost their addresses again — time to question the network.",
+                "Names",
+            ),
         ]
     )
     service, repository, telegram = make_ai_service(tmp_path, provider)
@@ -2179,7 +2191,9 @@ def test_retryable_ai_failure_keeps_static_copy_and_edits_later(tmp_path: Path) 
 
 
 def test_delayed_static_announcement_still_schedules_ai_after_retry(tmp_path: Path) -> None:
-    provider = FakeAIProvider(["Адресная книга сети открыта — осталось понять, кто в ней наводит порядок."])
+    provider = FakeAIProvider(
+        [ai_teaser("Names opened the network address book — someone must keep order.", "Names")]
+    )
     service, repository, telegram = make_ai_service(
         tmp_path,
         provider,
@@ -2208,7 +2222,9 @@ def test_delayed_static_announcement_still_schedules_ai_after_retry(tmp_path: Pa
 
 
 def test_ai_candidate_is_reused_when_telegram_edit_needs_retry(tmp_path: Path) -> None:
-    provider = FakeAIProvider(["Сетевые имена ищут свои адреса, и кто-то обязан их познакомить."])
+    provider = FakeAIProvider(
+        [ai_teaser("Names seek their addresses, and the network owes them an introduction.", "Names")]
+    )
     service, repository, telegram = make_ai_service(
         tmp_path,
         provider,
@@ -2233,7 +2249,9 @@ def test_ai_candidate_is_reused_when_telegram_edit_needs_retry(tmp_path: Path) -
 
 
 def test_overlapping_ai_retries_claim_one_job_once(tmp_path: Path) -> None:
-    provider = BlockingAIProvider("Сетевые имена ищут свои адреса, и кто-то обязан их познакомить.")
+    provider = BlockingAIProvider(
+        ai_teaser("Names seek their addresses, and the network owes them an introduction.", "Names")
+    )
     service, repository, telegram = make_ai_service(tmp_path, provider)
     now = datetime.now(timezone.utc)
     repository.enqueue_ai_enhancement(
@@ -2308,8 +2326,85 @@ def test_admin_ai_status_does_not_call_provider(tmp_path: Path) -> None:
     assert "AI Квизи:" in text
     assert "генерация подводок: ON" in text
     assert "fake/fake-copy-model" in text
+    assert "prompt-skill: question-teaser-v1" in text
     assert "ожидают улучшения: 0" in text
     assert provider.calls == []
+
+
+def test_admin_ai_preview_generates_three_variants_without_publishing(tmp_path: Path) -> None:
+    provider = FakeAIProvider(
+        [
+            ai_teaser(
+                "Канального уровня сегодня достаточно, чтобы данные вышли на сцену в правильном костюме.",
+                "канального уровня",
+            ),
+            ai_teaser(
+                "Единица данных канального уровня уже у рампы — осталось назвать её роль.",
+                "единица данных канального уровня",
+            ),
+            ai_teaser(
+                "Модель OSI распределила роли, а канального уровня всё ещё ждёт точное имя.",
+                "канального уровня",
+            ),
+        ]
+    )
+    service, repository, telegram = make_ai_service(tmp_path, provider)
+
+    result = service.handle_update(
+        {
+            "update_id": 903,
+            "message": {
+                "message_id": 89,
+                "message_thread_id": 101,
+                "chat": {"id": "-1001"},
+                "from": {"id": 7, "first_name": "Admin"},
+                "text": "/kvizi_ai_preview network",
+            },
+        }
+    )
+
+    assert result == {
+        "ok": True,
+        "command": "/kvizi_ai_preview",
+        "scenario": "network",
+        "generated": 3,
+        "failed": 0,
+    }
+    assert len(provider.calls) == 3
+    assert all(call["purpose"] == "question_announcement_preview" for call in provider.calls)
+    assert telegram.sent_polls == []
+    assert telegram.edited_messages == []
+    assert repository.asked_question_ids("network") == set()
+    assert repository.pending_ai_enhancement_count() == 0
+    assert len(telegram.sent_messages) == 1
+    text = telegram.sent_messages[0]["text"]
+    assert "AI-preview Квизи:" in text
+    assert "1. Канального уровня" in text
+    assert "2. Единица данных" in text
+    assert "3. Модель OSI" in text
+    assert "poll, анонсы и история вопросов не изменены" in text
+
+
+def test_admin_ai_preview_rejects_unknown_scenario_without_provider_call(tmp_path: Path) -> None:
+    provider = FakeAIProvider([])
+    service, _repository, telegram = make_ai_service(tmp_path, provider)
+
+    result = service.handle_update(
+        {
+            "update_id": 904,
+            "message": {
+                "message_id": 90,
+                "message_thread_id": 101,
+                "chat": {"id": "-1001"},
+                "from": {"id": 7, "first_name": "Admin"},
+                "text": "/kvizi_ai_preview unknown",
+            },
+        }
+    )
+
+    assert result["generated"] == 0
+    assert provider.calls == []
+    assert "Формат: /kvizi_ai_preview" in telegram.sent_messages[-1]["text"]
 
 
 def test_admin_status_reports_loaded_questions_topics_active_polls_and_cron(tmp_path: Path) -> None:
@@ -2775,6 +2870,7 @@ def test_admin_help_lists_commands_and_cron_endpoints(tmp_path: Path) -> None:
     assert "/kvizi_errors" in text
     assert "/kvizi_review" in text
     assert "/kvizi_questions_status" in text
+    assert "/kvizi_ai_preview" in text
     assert "/kvizi_questions_template" in text
     assert "/kvizi_upload_questions" in text
     assert "/kvizi_backups" in text
@@ -3711,7 +3807,7 @@ def test_create_app_wires_groq_provider_only_when_ai_copy_is_configured(tmp_path
     health = app.test_client().get("/health").get_json()
 
     assert service.ai_provider.name == "groq"
-    assert service.ai_provider.model == "llama-3.1-8b-instant"
+    assert service.ai_provider.model == "qwen/qwen3.6-27b"
     assert health["ai_copy_enabled"] is True
     assert health["ai_provider_configured"] is True
 

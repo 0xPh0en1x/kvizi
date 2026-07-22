@@ -138,6 +138,7 @@ ADMIN_HELP_TEXT = (
     "/kvizi_status - подробный статус\n"
     "/kvizi_status_compact - короткий статус\n"
     "/kvizi_ai_status - состояние AI-подводок и очереди\n"
+    "/kvizi_ai_preview [network|system|security|hardware] - три AI-подводки без публикации\n"
     "/kvizi_recent - последние вопросы и ответы\n"
     "/kvizi_errors - свежие ошибки и история Telegram/cron\n"
     "/kvizi_review - ревизия качества вопросов\n"

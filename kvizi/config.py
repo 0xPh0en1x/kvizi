@@ -100,7 +100,7 @@ def load_settings() -> Settings:
         ai_enabled=_parse_bool(os.getenv("KVIZI_AI_ENABLED"), False),
         ai_copy_enabled=_parse_bool(os.getenv("KVIZI_AI_COPY_ENABLED"), False),
         groq_api_key=os.getenv("GROQ_API_KEY", "").strip(),
-        ai_copy_model=os.getenv("KVIZI_AI_COPY_MODEL", "llama-3.1-8b-instant").strip(),
+        ai_copy_model=os.getenv("KVIZI_AI_COPY_MODEL", "qwen/qwen3.6-27b").strip(),
         ai_timeout_seconds=_parse_positive_float(
             os.getenv("KVIZI_AI_TIMEOUT_SECONDS"),
             7.0,

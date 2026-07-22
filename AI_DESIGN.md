@@ -273,15 +273,15 @@ Groq: более сильная модель
 ### Игровые фразы
 
 ```text
-Groq: быстрая малая модель
+Groq: Qwen 3.6 27B без reasoning
   -> g4f: явный список проверенных no-auth провайдеров
   -> существующий шаблон kvizi/copy.py
 ```
 
 Обсуждавшиеся стартовые модели Groq:
 
-- `llama-3.3-70b-versatile` для обсуждений;
-- `llama-3.1-8b-instant` для коротких фраз и дешёвого fallback.
+- `llama-3.3-70b-versatile` или другая доступная сильная модель для будущих обсуждений;
+- `qwen/qwen3.6-27b` без reasoning для коротких фраз.
 
 Это примеры конфигурации, а не жёсткий контракт: доступные модели и лимиты
 проверяются перед реализацией и меняются через переменные окружения.
@@ -364,7 +364,7 @@ KVIZI_AI_CHAT_PROVIDER=groq
 KVIZI_AI_COPY_PROVIDER=groq
 GROQ_API_KEY=
 KVIZI_AI_CHAT_MODEL=llama-3.3-70b-versatile
-KVIZI_AI_COPY_MODEL=llama-3.1-8b-instant
+KVIZI_AI_COPY_MODEL=qwen/qwen3.6-27b
 KVIZI_G4F_PROVIDERS=
 
 KVIZI_AI_TIMEOUT_SECONDS=7
@@ -386,6 +386,8 @@ KVIZI_AI_PROVIDER_COOLDOWN_SECONDS=300
 
 - `/kvizi_ai_status` — флаги, лимиты, текущие circuit breakers и обезличенная
   статистика;
+- `/kvizi_ai_preview [network|system|security|hardware]` — три варианта подводки
+  на встроенном тестовом вопросе без poll, анонса и изменения истории;
 - `/kvizi_ai_check` — короткий безопасный запрос каждому настроенному
   провайдеру;
 - `/kvizi_ai_stop` — закрыть текущую ветку;
@@ -473,7 +475,7 @@ Telegram `message_id` нужно записывать в `ai_messages`.
 
 Так как production обновляется через GitHub и pull на PythonAnywhere,
 возможности включаются по одной. Перед включением запускаются полный
-`python -m pytest`, `/kvizi_ai_check`, затем `/kvizi_ai_status`. Сначала лучше
+`python -m pytest`, `/kvizi_ai_status`, затем `/kvizi_ai_preview`. Сначала лучше
 включить один тип коротких фраз, затем обсуждения, и только после этого g4f.
 
 ## 18. Внешние ссылки и изменчивые допущения
@@ -485,6 +487,7 @@ production-включением:
 - [Telegram Bot API](https://core.telegram.org/bots/api)
 - [Telegram: возможности ботов и Privacy Mode](https://core.telegram.org/bots/features)
 - [Groq API reference](https://console.groq.com/docs/api-reference)
+- [Groq: Qwen 3.6 27B](https://console.groq.com/docs/model/qwen/qwen3.6-27b)
 - [Groq rate limits](https://console.groq.com/docs/rate-limits)
 - [g4f / gpt4free](https://github.com/xtekky/gpt4free)
 - [g4f: providers and models](https://g4f.dev/docs/providers-and-models.html)

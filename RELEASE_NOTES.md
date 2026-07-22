@@ -2,6 +2,13 @@
 
 ## Reliability update - 2026-07-22
 
+- Switched the default AI copy model to `qwen/qwen3.6-27b` in non-reasoning
+  mode with Groq JSON output settings recommended for this model.
+- Added the versioned `question-teaser-v1` prompt-skill with persona rules,
+  few-shot examples, anti-examples, and a validated exact-question anchor.
+- Added admin-only `/kvizi_ai_preview [topic]`: it generates three variants
+  from built-in synthetic scenarios without reading `questions.csv`, posting a
+  poll/announcement, or mutating question history.
 - Added the first optional Groq-powered host-copy slice. New-question
   announcements now send reliable `copy.py` text first and only then edit the
   normal Telegram message with a validated AI intro.

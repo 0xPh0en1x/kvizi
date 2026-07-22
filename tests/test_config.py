@@ -50,7 +50,7 @@ def test_ai_copy_is_off_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.ai_enabled is False
     assert settings.ai_copy_enabled is False
     assert settings.groq_api_key == ""
-    assert settings.ai_copy_model == "llama-3.1-8b-instant"
+    assert settings.ai_copy_model == "qwen/qwen3.6-27b"
     assert settings.ai_timeout_seconds == 7.0
     assert settings.ai_max_attempts == 3
 

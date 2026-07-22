@@ -52,7 +52,7 @@ KVIZI_ANNOUNCE_STREAKS=true
 KVIZI_AI_ENABLED=false
 KVIZI_AI_COPY_ENABLED=false
 GROQ_API_KEY=
-KVIZI_AI_COPY_MODEL=llama-3.1-8b-instant
+KVIZI_AI_COPY_MODEL=qwen/qwen3.6-27b
 KVIZI_AI_TIMEOUT_SECONDS=7
 KVIZI_AI_RETRY_DELAY_SECONDS=300
 KVIZI_AI_MAX_ATTEMPTS=3
@@ -88,6 +88,7 @@ os.environ["KVIZI_AI_ENABLED"] = "false"
 os.environ["KVIZI_AI_COPY_ENABLED"] = "false"
 # При включении лучше хранить ключ в Web app environment, а не в git.
 # os.environ["GROQ_API_KEY"] = "..."
+# os.environ["KVIZI_AI_COPY_MODEL"] = "qwen/qwen3.6-27b"
 os.environ["KVIZI_DIFFICULTY_POINTS"] = "easy:5,normal:10,hard:15,ccna:20"
 os.environ["KVIZI_CHALLENGE_REWARDS"] = "easy:5:10,normal:10:25,hard:15:40,ccna:20:55"
 
@@ -140,6 +141,11 @@ https://YOUR_USERNAME.pythonanywhere.com/health
 It should return HTTP 200 with `"ok": true`, `"configuration_ok": true` and
 `"questions_loaded": true`. Missing runtime settings or a broken/empty question bank
 return HTTP 503.
+
+Если включены AI-подводки, после reload выполнить `/kvizi_ai_status`, убедиться,
+что указана модель `qwen/qwen3.6-27b`, и проверить три варианта командой
+`/kvizi_ai_preview network`. Preview использует встроенный тестовый вопрос и не
+публикует poll.
 
 ## 4. Telegram setup
 

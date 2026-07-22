@@ -67,7 +67,7 @@ $env:KVIZI_ADMIN_IDS="111111111,222222222"
 - `KVIZI_ANNOUNCE_STREAKS=true` — анонс бонусных серий
 - `KVIZI_AI_ENABLED=false` и `KVIZI_AI_COPY_ENABLED=false` — общий и отдельный флаги AI-подводок
 - `GROQ_API_KEY=...` — ключ Groq; без него AI-контур не запускается
-- `KVIZI_AI_COPY_MODEL=llama-3.1-8b-instant` — модель коротких подводок
+- `KVIZI_AI_COPY_MODEL=qwen/qwen3.6-27b` — модель коротких подводок; для неё запросы идут без reasoning
 - `KVIZI_AI_TIMEOUT_SECONDS=7` — timeout одной попытки
 - `KVIZI_AI_RETRY_DELAY_SECONDS=300`, `KVIZI_AI_MAX_ATTEMPTS=3`, `KVIZI_AI_JOB_TTL_SECONDS=1800` — очередь повторов
 - `KVIZI_DIFFICULTY_POINTS=easy:5,normal:10,hard:15,ccna:20` — базовые очки за правильный ответ
@@ -81,10 +81,12 @@ $env:KVIZI_ADMIN_IDS="111111111,222222222"
 подводку и редактирует это сообщение через Telegram `editMessageText`.
 
 Для осмысленной подводки Groq получает тему и текст опубликованного вопроса, но
-не получает варианты и правильный ответ. Промпт требует связанный с вопросом
-тизер без пересказа и спойлеров. Ответ модели дополнительно проверяется: явное
-упоминание любого варианта ответа и известные фразы-пустышки отклоняются, после
-чего в Telegram остаётся исходный текст из `copy.py`.
+не получает варианты и правильный ответ. Версионируемый prompt-skill
+`question-teaser-v1` хранит голос Квизи, положительные примеры и антипримеры
+отдельно от доменной логики. Модель возвращает JSON с `teaser` и `anchor` —
+дословным фрагментом вопроса, который обязан присутствовать в подводке. Сервер
+проверяет эту привязку, явные упоминания вариантов ответа и известные
+фразы-пустышки; при любой проблеме в Telegram остаётся исходный текст `copy.py`.
 
 Тема, сложность, очки и ссылка никогда не берутся из ответа модели: сервер
 добавляет их отдельным неизменяемым блоком. Timeout, 429, 5xx и сетевые ошибки
@@ -98,10 +100,13 @@ $env:KVIZI_ADMIN_IDS="111111111,222222222"
 KVIZI_AI_ENABLED=true
 KVIZI_AI_COPY_ENABLED=true
 GROQ_API_KEY=<secret>
+KVIZI_AI_COPY_MODEL=qwen/qwen3.6-27b
 ```
 
-После Reload проверить `/health` и `/kvizi_ai_status`. Ключ Groq не сохраняется
-в SQLite, экспорт и сообщения об ошибках.
+После Reload проверить `/health`, `/kvizi_ai_status`, затем выполнить
+`/kvizi_ai_preview network`. Команда делает три запроса на встроенном тестовом
+сценарии и не читает `questions.csv`, не публикует poll и не меняет историю
+вопросов. Ключ Groq не сохраняется в SQLite, экспорт и сообщения об ошибках.
 
 ## Вопросы
 
@@ -192,6 +197,7 @@ topic из текущего CSV.
 - `/kvizi_status` — показать вопросы, топики, активные poll/challenge и последний cron
 - `/kvizi_status_compact` — короткий статус со счётчиками active/expired/challenge
 - `/kvizi_ai_status` — флаги, provider/model и размер очереди AI-улучшений
+- `/kvizi_ai_preview [network|system|security|hardware]` — три проверенные подводки на безопасном тестовом вопросе без публикации
 - `/kvizi_version` — показать версию кода, git commit и deploy-пути
 - `/kvizi_questions_status` — показать покрытие `questions.csv` по темам и сложностям
 - `/kvizi_questions_template [difficulty]` — отправить CSV-шаблон для новых вопросов
